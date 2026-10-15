@@ -81,7 +81,7 @@ export async function runAgentCli(options: AgentCliOptions): Promise<void> {
 
   let mcp: { connections: McpConnection[]; close: () => Promise<void> } = { connections: [], close: async () => undefined };
   try {
-    await mkdir(options.dataDir, { recursive: true });
+    await mkdir(options.dataDir, { recursive: true, mode: 0o700 });
     runner = await createCommandRunner({
       choice: options.sandbox,
       image: options.sandboxImage,

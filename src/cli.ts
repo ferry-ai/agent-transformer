@@ -9,9 +9,10 @@ import type { BrowserChoice } from './browser/launch.js';
 import { defaultDataDir } from './config.js';
 import { AdapterError, type ChatReply } from './core/adapter.js';
 import { Transcript } from './core/transcript.js';
+import { preparePrivateDataDir } from './tools/data-dir.js';
 import { DEFAULT_SANDBOX_IMAGE, type SandboxChoice } from './tools/sandbox.js';
 import { isEnvName } from './tools/shell.js';
-import { dim, errorMessage, red, safe, ticker } from './term.js';
+import { dim, errorMessage, red, safe, ticker, yellow } from './term.js';
 
 const USAGE = `Usage: npm run chat -- [options]
 
@@ -84,6 +85,10 @@ async function main(): Promise<void> {
 
   const timeoutSec = positive(values.timeout, '--timeout');
   const dataDir = resolve(values['data-dir'] ?? defaultDataDir());
+  // Profiles, sessions and checkpoints are private: 0700 folders, 0600 files.
+  for (const warning of await preparePrivateDataDir(dataDir, { isDefault: values['data-dir'] === undefined })) {
+    console.log(yellow(`⚠ ${warning}`));
+  }
   const browser = parseBrowser(values.browser);
   const deepseek = (): DeepSeekWebAdapter =>
     new DeepSeekWebAdapter({
