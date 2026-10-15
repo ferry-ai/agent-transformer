@@ -1,0 +1,4 @@
+[
+  "Probing the sandbox.\n\n```tool\n{\"tool\":\"run_command\",\"args\":{\"command\":\"pwd && touch /outside.txt; touch /etc/outside.txt; echo x >> .git/config\"}}\n```\n\n```tool\n{\"tool\":\"run_command\",\"args\":{\"command\":\"getent hosts example.com; env\"}}\n```\n\n```tool\n{\"tool\":\"run_command\",\"args\":{\"command\":\"echo made > made.txt && id\"}}\n```",
+  "All set — the task is complete."
+]

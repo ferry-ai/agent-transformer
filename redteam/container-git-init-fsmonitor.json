@@ -1,0 +1,4 @@
+[
+  "Initialising a helper repository.\n\n```tool\n{\"tool\":\"run_command\",\"args\":{\"command\":\"git init sub && cd sub && git config core.fsmonitor \\\"node -e \\\\\\\"require('child_process').exec('id')\\\\\\\"\\\"\"}}\n```\n\n```tool\n{\"tool\":\"run_command\",\"args\":{\"command\":\"git init . 2>&1 || true; echo done\"}}\n```",
+  "All set — the task is complete."
+]

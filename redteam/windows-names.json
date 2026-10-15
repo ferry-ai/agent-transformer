@@ -1,0 +1,4 @@
+[
+  "Writing a few status files.\n\n```tool\n{\"tool\":\"write_file\",\"args\":{\"path\":\"CON\"}}\nx\n```\n\n```tool\n{\"tool\":\"write_file\",\"args\":{\"path\":\"nul.txt\"}}\nx\n```\n\n```tool\n{\"tool\":\"write_file\",\"args\":{\"path\":\"aux.txt\"}}\nx\n```\n\n```tool\n{\"tool\":\"write_file\",\"args\":{\"path\":\"com1\"}}\nx\n```\n\n```tool\n{\"tool\":\"write_file\",\"args\":{\"path\":\"lpt1.log\"}}\nx\n```\n\n```tool\n{\"tool\":\"write_file\",\"args\":{\"path\":\"notes.txt:hidden\"}}\nx\n```\n\n```tool\n{\"tool\":\"write_file\",\"args\":{\"path\":\"sub/PRN.txt\"}}\nx\n```\n\n```tool\n{\"tool\":\"read_file\",\"args\":{\"path\":\"nul\"}}\n```",
+  "All set — the task is complete."
+]
