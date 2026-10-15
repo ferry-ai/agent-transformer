@@ -8,6 +8,7 @@ import { AdapterError, type ChatAdapter } from './core/adapter.js';
 import { Transcript } from './core/transcript.js';
 import { connectMcpServers, loadMcpConfig, type McpConnection } from './tools/mcp.js';
 import { nativeTools } from './tools/native.js';
+import { onExit, processGroups } from './tools/processes.js';
 import { Toolbox } from './tools/toolbox.js';
 import { checkWorkspace } from './tools/workspace.js';
 import type { ToolOutput } from './tools/types.js';
@@ -45,6 +46,8 @@ export async function runAgentCli(options: AgentCliOptions): Promise<void> {
   const { adapter } = options;
   // Before anything else: the agent never starts on the filesystem root, the home folder or the data dir.
   for (const warning of await checkWorkspace(options.workspace, { dataDir: options.dataDir })) console.log(yellow(`⚠ ${warning}`));
+  // What commands leave running dies with the agent: on exit, on a crash, on SIGINT, SIGTERM or SIGHUP.
+  const removeExitHandlers = onExit(() => processGroups.killAll());
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   const closed = new Promise<null>((done) => rl.once('close', () => done(null)));
   const ask: Ask = (prompt) => Promise.race([rl.question(prompt).catch(() => null), closed]);
@@ -162,6 +165,8 @@ export async function runAgentCli(options: AgentCliOptions): Promise<void> {
     }
   } finally {
     rl.close();
+    processGroups.killAll();
+    removeExitHandlers();
     await mcp.close();
     await adapter.close();
   }

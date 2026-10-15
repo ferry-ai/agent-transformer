@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import { getDefaultEnvironment } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { processGroups, type ProcessGroups } from './processes.js';
 
 export interface CommandOptions {
   cwd: string;
@@ -7,6 +8,8 @@ export interface CommandOptions {
   signal?: AbortSignal;
   /** The whole environment of the command. Default: commandEnvironment(), never process.env. */
   env?: Record<string, string>;
+  /** Where the command's process group is tracked until nothing in it is left. Default: processGroups. */
+  groups?: ProcessGroups;
 }
 
 export interface CommandResult {
@@ -57,7 +60,8 @@ export function isEnvName(name: string): boolean {
 
 /**
  * Runs a command line through the system shell, with no input, and kills the whole
- * process tree on timeout or abort.
+ * process tree on timeout or abort. What it leaves running stays tracked, and is
+ * killed when the agent exits (processes.ts).
  */
 export function runCommand(command: string, options: CommandOptions): Promise<CommandResult> {
   const started = Date.now();
@@ -72,6 +76,8 @@ export function runCommand(command: string, options: CommandOptions): Promise<Co
       detached: !windows,
       windowsHide: true,
     });
+    const groups = options.groups ?? processGroups;
+    if (child.pid !== undefined) groups.add(child.pid);
     let output = '';
     let dropped = 0;
     let timedOut = false;
@@ -109,6 +115,7 @@ export function runCommand(command: string, options: CommandOptions): Promise<Co
     child.on('close', (exitCode, signal) => {
       closed = true;
       clearTimeout(timer);
+      if (child.pid !== undefined) groups.release(child.pid);
       options.signal?.removeEventListener('abort', kill);
       if (dropped > 0) output += `\n[… ${dropped} more bytes of output dropped …]`;
       resolve({ exitCode, signal, output, timedOut, durationMs: Date.now() - started });
