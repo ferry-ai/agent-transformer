@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, parse } from 'node:path';
@@ -45,8 +46,17 @@ test('case variants count on Windows and macOS', async () => {
   const shouted = home.toUpperCase();
   await assert.rejects(checkWorkspace(home, { home: shouted, dataDir, platform: 'darwin' }), /is your home folder/);
   await assert.rejects(checkWorkspace(base, { home: shouted, dataDir, platform: 'win32' }), /contains your home folder/);
-  // Linux compares exactly: there, the upper-case path is another folder.
-  assert.deepEqual(await checkWorkspace(home, { home: shouted, dataDir, platform: 'linux' }), []);
+});
+
+test('Linux compares exactly: there, the upper-case path is another folder', async (t) => {
+  const shouted = home.toUpperCase();
+  // Only true on a case-sensitive file system with POSIX paths. Where the upper-case path exists, it is
+  // this same folder (Windows, macOS by default), and Node's path module ignores case on Windows.
+  if (process.platform === 'win32' || existsSync(shouted)) {
+    t.skip('needs a case-sensitive file system: here the upper-case path is the home folder itself');
+    return;
+  }
+  assert.deepEqual(await checkWorkspace(home, { home: shouted, dataDir: join(base, 'data'), platform: 'linux' }), []);
 });
 
 test('the data dir: a workspace inside it is refused, a data dir inside the workspace warns', async () => {
