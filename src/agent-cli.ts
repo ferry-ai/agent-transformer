@@ -1,4 +1,4 @@
-import { existsSync } from 'node:fs';
+import { existsSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { Agent, type AgentEvent, type AgentResult } from './agent/loop.js';
@@ -39,6 +39,7 @@ type Ask = (prompt: string) => Promise<string | null>;
 
 export async function runAgentCli(options: AgentCliOptions): Promise<void> {
   const { adapter } = options;
+  if (!isFolder(options.workspace)) throw new Error(`The workspace is not a folder: ${options.workspace}`);
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   const closed = new Promise<null>((done) => rl.once('close', () => done(null)));
   const ask: Ask = (prompt) => Promise.race([rl.question(prompt).catch(() => null), closed]);
@@ -154,6 +155,14 @@ export async function runAgentCli(options: AgentCliOptions): Promise<void> {
     rl.close();
     await mcp.close();
     await adapter.close();
+  }
+}
+
+function isFolder(path: string): boolean {
+  try {
+    return statSync(path).isDirectory();
+  } catch {
+    return false;
   }
 }
 

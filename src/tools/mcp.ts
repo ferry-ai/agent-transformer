@@ -112,12 +112,17 @@ export async function connectMcpServer(config: McpServerConfig, transport?: Tran
   }
 
   const tools: Tool[] = [];
-  let cursor: string | undefined;
-  do {
-    const page = await client.listTools(cursor === undefined ? {} : { cursor }, { timeout: CONNECT_TIMEOUT_MS });
-    for (const tool of page.tools) tools.push(wrapTool(client, config, tool));
-    cursor = page.nextCursor;
-  } while (cursor !== undefined);
+  try {
+    let cursor: string | undefined;
+    do {
+      const page = await client.listTools(cursor === undefined ? {} : { cursor }, { timeout: CONNECT_TIMEOUT_MS });
+      for (const tool of page.tools) tools.push(wrapTool(client, config, tool));
+      cursor = page.nextCursor;
+    } while (cursor !== undefined);
+  } catch (error) {
+    await client.close().catch(() => undefined);
+    throw new Error(`MCP server "${config.name}" did not list its tools: ${message(error)}`);
+  }
 
   return { name: config.name, tools, close: () => client.close() };
 }
