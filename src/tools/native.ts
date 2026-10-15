@@ -1,7 +1,7 @@
 import { mkdir, readdir, readFile, realpath, stat, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { runCommand } from './shell.js';
-import { ToolError, type Tool } from './types.js';
+import { ToolError, type ApprovalSpec, type Tool } from './types.js';
 
 export interface NativeToolsOptions {
   /** The workspace: file tools cannot reach outside it, commands start in it. */
@@ -24,7 +24,7 @@ export function nativeTools(options: NativeToolsOptions): Tool[] {
   const root = resolve(options.root);
   const where = (path: string): Promise<string> => insideWorkspace(root, path);
   const show = (path: string): string => relative(root, path).split(sep).join('/') || '.';
-  const writeApproval = (summary: string): string | undefined => (options.confirmWrites ? summary : undefined);
+  const writeApproval = (spec: ApprovalSpec): ApprovalSpec | undefined => (options.confirmWrites ? spec : undefined);
   const timeout = options.commandTimeoutMs ?? 120_000;
   const maxTimeout = options.maxCommandTimeoutMs ?? 600_000;
 
@@ -68,7 +68,8 @@ export function nativeTools(options: NativeToolsOptions): Tool[] {
       required: ['path', 'content'],
     },
     body: 'content',
-    approval: (args) => writeApproval(`write ${String(args.path)} (${String(args.content).length} characters)`),
+    approval: (args) =>
+      writeApproval({ summary: `write ${String(args.path)} (${String(args.content).length} characters)`, detail: String(args.content) }),
     async run(args) {
       const path = await where(String(args.path));
       const content = String(args.content);
@@ -101,7 +102,7 @@ export function nativeTools(options: NativeToolsOptions): Tool[] {
       required: ['path', 'edits'],
     },
     body: 'edits',
-    approval: (args) => writeApproval(`edit ${String(args.path)}`),
+    approval: (args) => writeApproval({ summary: `edit ${String(args.path)}`, detail: String(args.edits) }),
     async run(args) {
       const path = await where(String(args.path));
       const original = await readFile(path, 'utf8').catch((error: unknown) => fail(error, show(path)));
@@ -169,7 +170,7 @@ export function nativeTools(options: NativeToolsOptions): Tool[] {
       required: ['command'],
     },
     body: 'command',
-    approval: (args) => `run in ${root}:\n${String(args.command).trimEnd()}`,
+    approval: (args) => ({ summary: `run a command in ${root}`, detail: String(args.command).trimEnd() }),
     async run(args, context) {
       const seconds = Number(args.timeout_sec ?? timeout / 1000);
       const result = await runCommand(String(args.command), {

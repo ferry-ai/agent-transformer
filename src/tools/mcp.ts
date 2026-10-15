@@ -182,7 +182,8 @@ function wrapTool(client: Client, config: McpServerConfig, tool: ListedTool): To
     name,
     description: tool.description ?? tool.title ?? '',
     params: isRecord(tool.inputSchema) ? (tool.inputSchema as JsonSchema) : { type: 'object' },
-    approval: trusted ? undefined : (args) => `call ${name} ${preview(args)}`,
+    // The whole arguments, never a preview: the user approves exactly what is sent.
+    approval: trusted ? undefined : (args) => ({ summary: `call ${name}`, detail: JSON.stringify(args, null, 2) }),
     async run(args, context) {
       const result = await client.callTool({ name: tool.name, arguments: args }, undefined, {
         timeout: config.timeoutMs ?? CALL_TIMEOUT_MS,
@@ -224,11 +225,6 @@ export function toOutput(result: Record<string, unknown>): ToolOutput {
   if (parts.length === 0 && result.structuredContent !== undefined) parts.push(JSON.stringify(result.structuredContent, null, 2));
   if (parts.length === 0 && 'toolResult' in result) parts.push(JSON.stringify(result.toolResult, null, 2));
   return { ok: result.isError !== true, text: parts.join('\n') };
-}
-
-function preview(args: Record<string, unknown>): string {
-  const text = JSON.stringify(args);
-  return text.length > 300 ? `${text.slice(0, 300)}…` : text;
 }
 
 function expand(values: Record<string, string>): Record<string, string> {

@@ -74,7 +74,7 @@ test('calls go through the toolbox: approval, body, errors, images', async () =>
   const asked: string[] = [];
   const box = new Toolbox(connection.tools, {
     approve: async (request) => {
-      asked.push(request.summary);
+      asked.push(`${request.summary} ${request.detail ?? ''}`);
       return { approved: true };
     },
   });

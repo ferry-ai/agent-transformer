@@ -2,14 +2,15 @@ import { existsSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { Agent, type AgentEvent, type AgentResult } from './agent/loop.js';
+import { createApprover } from './approval-prompt.js';
 import { proseOf, type ToolCall } from './agent/protocol.js';
 import { AdapterError, type ChatAdapter } from './core/adapter.js';
 import { Transcript } from './core/transcript.js';
 import { connectMcpServers, loadMcpConfig, type McpConnection } from './tools/mcp.js';
 import { nativeTools } from './tools/native.js';
 import { Toolbox } from './tools/toolbox.js';
-import type { Approve, ToolOutput } from './tools/types.js';
-import { dim, errorMessage, green, red, ticker, yellow } from './term.js';
+import type { ToolOutput } from './tools/types.js';
+import { dim, errorMessage, green, red, safe, safeLine, ticker, tty, yellow } from './term.js';
 
 export interface AgentCliOptions {
   adapter: ChatAdapter;
@@ -54,14 +55,13 @@ export async function runAgentCli(options: AgentCliOptions): Promise<void> {
     void adapter.close();
   });
 
-  const approve: Approve = async ({ tool, summary }) => {
-    console.log(`${yellow(`? ${tool}`)} wants to ${summary}`);
-    const answer = await ask('Allow? [y/N, or write a note for the model] ');
-    const text = answer?.trim() ?? '';
-    if (/^(y|yes|s|si|sì)$/i.test(text)) return { approved: true };
-    if (text === '' || /^(n|no)$/i.test(text)) return { approved: false };
-    return { approved: false, note: text };
-  };
+  // Fail closed: a piped stdin could answer "y" to a prompt nobody sees.
+  const approve = createApprover({
+    ask,
+    print: (text) => console.log(text),
+    interactive: process.stdin.isTTY === true && process.stdout.isTTY === true,
+    color: tty,
+  });
 
   let mcp: { connections: McpConnection[]; close: () => Promise<void> } = { connections: [], close: async () => undefined };
   try {
@@ -128,7 +128,7 @@ export async function runAgentCli(options: AgentCliOptions): Promise<void> {
         continue;
       }
       if (input === '/tools') {
-        console.log(toolbox.list().map((tool) => `  ${tool.name}`).join('\n'));
+        console.log(toolbox.list().map((tool) => `  ${safeLine(tool.name)}`).join('\n'));
         continue;
       }
       if (input === '/new') {
@@ -198,7 +198,7 @@ function printer(label: string, showThinking: boolean, isTool: (name: string) =>
         stop();
         if (showThinking && event.reply.thinking) console.log(dim(event.reply.thinking));
         const prose = proseOf(event.reply.text, { isTool });
-        if (prose !== '') console.log(`\n${prose}\n`);
+        if (prose !== '') console.log(`\n${safe(prose)}\n`);
         break;
       }
       case 'call':
@@ -219,18 +219,19 @@ function printer(label: string, showThinking: boolean, isTool: (name: string) =>
   return { onEvent, stop };
 }
 
+/** One line per call, for progress only: the approval prompt shows calls in full. */
 function describeCall(call: ToolCall): string {
   const args = JSON.stringify(call.args);
   const shown = args === '{}' ? '' : ` ${args.length > 120 ? `${args.slice(0, 120)}…` : args}`;
   const lines = call.body === undefined ? 0 : call.body.split('\n').length - 1;
-  return `${call.tool}${shown}${lines > 0 ? dim(` + ${lines} line${lines === 1 ? '' : 's'}`) : ''}`;
+  return `${safeLine(call.tool + shown)}${lines > 0 ? dim(` + ${lines} line${lines === 1 ? '' : 's'}`) : ''}`;
 }
 
 function summarize(output: ToolOutput): string {
   const lines = output.text.split('\n');
   const first = lines[0] ?? '';
   const head = first.length > 100 ? `${first.slice(0, 100)}…` : first;
-  return lines.length > 1 ? `${head} (+${lines.length - 1} lines)` : head;
+  return safeLine(lines.length > 1 ? `${head} (+${lines.length - 1} lines)` : head);
 }
 
 function printResult(result: AgentResult, durationMs: number, options: AgentCliOptions): void {

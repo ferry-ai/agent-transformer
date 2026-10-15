@@ -107,7 +107,8 @@ test('run_command asks first, then reports output and exit code', async () => {
   allow = true;
   const result = await call('run_command', {}, 'echo out && echo err 1>&2 && exit 3');
   assert.equal(asked.length, 1);
-  assert.match(asked[0]?.summary ?? '', /echo out/);
+  assert.match(asked[0]?.summary ?? '', /^run a command in /);
+  assert.equal(asked[0]?.detail, 'echo out && echo err 1>&2 && exit 3');
   assert.equal(result.ok, false);
   assert.match(result.text, /^\[exit code 3\]/);
   assert.match(result.text, /out/);

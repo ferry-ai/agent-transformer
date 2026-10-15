@@ -9,7 +9,7 @@ import type { BrowserChoice } from './browser/launch.js';
 import { defaultDataDir } from './config.js';
 import { AdapterError, type ChatReply } from './core/adapter.js';
 import { Transcript } from './core/transcript.js';
-import { dim, errorMessage, red, ticker } from './term.js';
+import { dim, errorMessage, red, safe, ticker } from './term.js';
 
 const USAGE = `Usage: npm run chat -- [options]
 
@@ -205,7 +205,7 @@ async function readBlock(ask: Ask): Promise<string | null> {
 
 function printReply(reply: ChatReply, showThinking: boolean): void {
   if (showThinking && reply.thinking) console.log(`${dim(reply.thinking)}\n`);
-  console.log(reply.text);
+  console.log(safe(reply.text));
   const notes = [reply.source, `${(reply.durationMs / 1000).toFixed(1)}s`];
   if (reply.thinking && !showThinking) notes.push('reasoning hidden: --show-thinking');
   if (reply.filtered) notes.push('answer replaced by DeepSeek');
@@ -214,8 +214,9 @@ function printReply(reply: ChatReply, showThinking: boolean): void {
 
 function printReport(report: InspectReport): void {
   const yesNo = (value: boolean): string => (value ? 'yes' : 'no');
+  // The title and the URL come from the website.
   console.log(
-    [
+    safe([
       `Browser:       ${report.browser}`,
       `Page:          ${report.url}  (${report.title})`,
       `Message box:   ${yesNo(report.inputVisible)}`,
@@ -223,7 +224,7 @@ function printReport(report: InspectReport): void {
       `Markdown:      ${report.markdownBlocks}`,
       `File input:    ${yesNo(report.fileInputs > 0)}`,
       `Verification:  ${report.verificationFrames > 0 ? 'shown' : 'none'}`,
-    ].join('\n'),
+    ].join('\n')),
   );
   if (!report.inputVisible) {
     console.log(dim('No message box: probably not logged in yet. Run "npm run chat" and log in in the browser window.'));

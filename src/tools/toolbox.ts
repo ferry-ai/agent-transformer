@@ -1,5 +1,6 @@
 import type { ToolCall } from '../agent/protocol.js';
-import { ToolError, type Approve, type JsonSchema, type Tool, type ToolOutput } from './types.js';
+import { countHidden } from './sanitize.js';
+import { ToolError, type ApprovalDecision, type ApprovalSpec, type Approve, type JsonSchema, type Tool, type ToolOutput } from './types.js';
 
 export interface ToolboxOptions {
   /** Asks the user before a tool that needs approval runs. Without it, such calls are denied. */
@@ -44,23 +45,35 @@ export class Toolbox {
     }
     try {
       const args = prepareArgs(tool, call);
-      const action = tool.approval?.(args);
-      if (action !== undefined) {
-        const decision = this.options.approve
-          ? await this.options.approve({ tool: tool.name, summary: action })
-          : { approved: false };
-        if (!decision.approved) {
-          const note = decision.note ? ` The user says: ${decision.note}` : '';
-          return { ok: false, text: `The user did not allow this call.${note}` };
-        }
+      // Counted on the raw arguments: the prompt shows them escaped, the count says there was something to escape.
+      const hidden = countHidden(args);
+      const ask = async (spec: ApprovalSpec): Promise<ApprovalDecision> =>
+        this.options.approve ? this.options.approve({ ...spec, tool: tool.name, hidden }) : { approved: false };
+      const requested = await tool.approval?.(args);
+      const spec = typeof requested === 'string' ? { summary: requested } : requested;
+      if (spec !== undefined) {
+        const decision = await ask(spec);
+        if (!decision.approved) return { ok: false, text: refusal(decision) };
       }
-      const output = await tool.run(args, { signal });
+      const output = await tool.run(args, {
+        signal,
+        approved: spec !== undefined,
+        confirm: async (more) => {
+          const decision = await ask(more);
+          if (!decision.approved) throw new ToolError(refusal(decision));
+        },
+      });
       return { ok: output.ok, text: truncate(output.text, this.options.maxResultChars ?? DEFAULT_MAX_RESULT_CHARS) };
     } catch (error) {
       if (error instanceof ToolError) return { ok: false, text: error.message };
       return { ok: false, text: `The tool failed: ${error instanceof Error ? error.message : String(error)}` };
     }
   }
+}
+
+function refusal(decision: ApprovalDecision): string {
+  const note = decision.note ? ` The user says: ${decision.note}` : '';
+  return `The user did not allow this call.${note}`;
 }
 
 /** Puts the body in its parameter, then checks the arguments against the schema. */
