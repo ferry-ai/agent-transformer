@@ -37,8 +37,10 @@ The results go back to the chat in the next message. A reply without tool blocks
 the final answer. Native tools: `read_file`, `write_file`, `edit_file`
 (SEARCH/REPLACE blocks), `list_dir`, `run_command`. File tools cannot leave the
 workspace; every shell command waits for your approval (`--confirm-writes` asks
-before writes too). Each task stops after `--max-iterations` replies (30) or
-`--max-minutes` (30).
+before writes too), and runs in a sandbox container when Docker or Podman is
+available (see Safety). Each task stops after `--max-iterations` replies (30) or
+`--max-minutes` (30). `/undo` puts the workspace back as it was before the last
+change; `/checkpoints` lists the snapshots; `/mcp` lists the MCP servers.
 
 **MCP servers** come from `--mcp <file>` or `<data-dir>/mcp.json`, in the usual
 `mcpServers` format. Their tools appear as `server.tool` and ask for approval unless
@@ -55,3 +57,126 @@ offline.
 
 Everything the agent reads, files and command output included, is sent to the chat
 provider: do not use it on code or data you cannot share.
+
+## Safety
+
+### Threat model
+
+- **The model is untrusted.** It reads files, command output and MCP results, so any
+  tool call may come from a prompt injection. Every rule below is enforced by the
+  local runner, in code. Nothing relies on the instructions sent to the chat.
+- **MCP servers** are your choice, but their tool descriptions and results are
+  untrusted text.
+- **Everything the agent reads is sent to the chat provider**: reading a secret is
+  already a leak.
+- **You are trusted, but your attention is limited.** An approval prompt shows
+  exactly what will happen, and nothing the model writes can change how it looks.
+- **Fail closed.** When something cannot be checked (no terminal for an approval, no
+  sandbox where one was asked for), the answer is no. The agent never falls back
+  quietly to a less safe mode.
+
+### What is enforced in every mode
+
+- **Approvals.** Every shell command asks, and so does every MCP tool that is not in
+  your `autoApprove`. Without a terminal (stdin and stdout must both be a TTY) or once
+  stdin is closed, the answer is no. A piped `y` does not count.
+- **The approval prompt** shows the whole command or the full MCP arguments behind a
+  `│` gutter, says where the command runs (`[sandbox: docker, network off]` or
+  `[HOST, not sandboxed]`), and warns about invisible characters. It also adds
+  advisory hints (`rm -rf`, `sudo`, `curl | sh`...). Hints are a pattern match, easy
+  to get around: they never replace the sandbox.
+- **The terminal.** Text from the model, commands and MCP servers is sanitized before
+  it is printed. Control characters, escape sequences, `\r`, bidi controls and
+  zero-width characters show as `\x1b`, `\r`, `\u{202e}`.
+- **Files.** The file tools stay inside the workspace, links resolved. Paths with a
+  `.git` segment are refused, in any spelling (case, trailing dots, `git~1`, `:stream`,
+  ignored Unicode). So is the data dir, even when it lies inside the workspace. The
+  agent asks before reading likely secrets (`.env*`, `*.pem`, `*.key`, `id_rsa*`,
+  `.npmrc`, `credentials*`...), and before writing files that run code by themselves
+  (`.envrc`, `.husky/`, `.vscode/`, `.github/workflows/`, `.npmrc`...) or files with
+  other hard links.
+- **The workspace** cannot be `/`, your home folder, a folder that contains it, or a
+  folder inside the data dir.
+- **Environment.** Commands on the host get only `PATH`, `HOME`, `USER`, `SHELL`,
+  `TERM`, `LOGNAME` and the locale (`LANG`, `LC_*`, `TZ`), plus each `--pass-env NAME`.
+- **Leftovers.** What commands leave running is killed when the agent exits, crashes,
+  or gets SIGINT, SIGTERM or SIGHUP.
+- **Checkpoints.** Before every change, the workspace is snapshotted into a shadow git
+  repository in the data dir; your own `.git` is never touched. `/undo` shows what it
+  will restore and remove, then asks.
+- **MCP.** At startup the agent lists every server, its tools and the ones that run
+  without asking. It pins a hash of the tool definitions: when they change, every
+  call to that server asks until you accept them (`/mcp accept <server>`). The
+  server's annotations never decide approval.
+- **Data at rest.** The data dir, profiles, sessions and checkpoints are 0700
+  folders with 0600 files.
+- **Redaction.** Private keys and AWS, GitHub and Slack tokens are masked in command
+  and MCP output. A masked text can never be written back over the original. This is
+  a safety net, not a guarantee.
+
+### Sandbox modes
+
+    --sandbox auto     (default) Docker, else Podman, else the host with a warning
+                       at startup and in every approval prompt
+    --sandbox docker   Docker, or an error at startup
+    --sandbox podman   Podman, or an error at startup
+    --sandbox none     the host, by choice
+    --sandbox-image    default docker.io/library/node:24-bookworm; never pulled
+                       without asking
+    --sandbox-network  give the container network access (default: none)
+
+In a container, one per session, created at the first command and removed at exit:
+
+- Only the workspace is mounted, at `/workspace` (the working directory). Its `.git`
+  is read-only, and a data dir inside the workspace is hidden. There is no home, no
+  Docker socket, no SSH agent and no host environment.
+- `--network none` (unless `--sandbox-network`), all capabilities dropped,
+  no-new-privileges, a read-only root with tmpfs for `/tmp` and `HOME`, limits of
+  512 processes, 2 GB of memory and 2 CPUs.
+- On Linux the container runs as your uid:gid, so the files it writes stay yours
+  (Podman: `--userns=keep-id`).
+- A timeout or Ctrl+C kills the command inside the container. Containers left by a
+  crashed session are removed at the next start.
+- The image needs `/bin/sh`. It also needs `setsid -w` (util-linux) for a clean
+  kill; without it, stopping a command restarts the container.
+
+**What the container protects:** the rest of your machine. A command cannot read
+your home, your SSH keys, your cloud credentials or your other projects. It cannot
+reach the Docker socket or your environment variables, and it cannot reach the
+network unless you allow it.
+
+**What it does not protect:**
+
+- **The workspace itself.** A command can read and change every file in it (except
+  `.git`), `.env` included, and its output goes to the chat. Checkpoints and `/undo`
+  help you recover.
+- **Files that run later on your machine.** A command can change `package.json`
+  scripts, a `Makefile`, `.envrc`, `.vscode/`, or the hooks of a nested repository.
+  It can also create a `.git` where there was none (the agent warns). Check them
+  before running them outside the sandbox.
+- **Exfiltration over the network**, when you pass `--sandbox-network`.
+- **Bugs in the kernel or in the container runtime.** A rootful Docker daemon runs
+  as root.
+- **What is outside the sandbox anyway.** The file tools run on the host, but the
+  path policy guards them. Local (stdio) MCP servers run on the host with your
+  permissions. The browser runs there too.
+
+**Host mode** (`--sandbox none`, or `auto` without Docker or Podman) keeps
+everything listed above under "every mode". But a command you approve runs with your
+permissions: it can read any file you can, use the network, and start a daemon that
+leaves its process group. Only your approval stands in the way.
+
+### Platform notes
+
+The process groups, the uid:gid mapping, the file modes and the check of an opened
+file through `/proc/self/fd` are POSIX or Linux features. On Windows:
+
+- commands get no process group, and taskkill cannot find what an exited shell left
+  behind;
+- file modes are ignored (the data dir is under `%LOCALAPPDATA%`, which only you can
+  open);
+- an opened file is checked by path and file id instead of `/proc`.
+
+On macOS and Windows a process racing links during a file operation is caught by a
+second path check, which is weaker than the Linux one. A SIGKILL of the agent cannot
+be caught: the next start removes its containers, but host processes survive.
