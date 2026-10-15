@@ -7,6 +7,12 @@ export interface ToolboxOptions {
   approve?: Approve;
   /** Longest result text sent back to the chat; the middle of longer ones is cut. */
   maxResultChars?: number;
+  /**
+   * Called before a call that may change the workspace runs: one that mutates, or one
+   * the user had to approve (commands, MCP calls). It reports its own failures: the
+   * call goes on even when no checkpoint could be taken.
+   */
+  checkpoint?: (label: string) => Promise<void>;
 }
 
 const DEFAULT_MAX_RESULT_CHARS = 20_000;
@@ -55,6 +61,7 @@ export class Toolbox {
         const decision = await ask(spec);
         if (!decision.approved) return { ok: false, text: refusal(decision) };
       }
+      if (tool.mutates === true || spec !== undefined) await this.options.checkpoint?.(label(tool, args)).catch(() => undefined);
       const output = await tool.run(args, {
         signal,
         confirm: async (more) => {
@@ -68,6 +75,13 @@ export class Toolbox {
       return { ok: false, text: `The tool failed: ${error instanceof Error ? error.message : String(error)}` };
     }
   }
+}
+
+/** "write_file src/app.py", "run_command npm test": what the checkpoint was taken before. */
+function label(tool: Tool, args: Record<string, unknown>): string {
+  const what = typeof args.path === 'string' ? args.path : typeof args.command === 'string' ? args.command : '';
+  const line = what.split('\n').find((part) => part.trim() !== '') ?? '';
+  return `${tool.name}${line === '' ? '' : ` ${line.trim().slice(0, 120)}`}`;
 }
 
 function refusal(decision: ApprovalDecision): string {

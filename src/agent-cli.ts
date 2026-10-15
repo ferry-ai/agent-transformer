@@ -7,6 +7,7 @@ import { createApprover } from './approval-prompt.js';
 import { proseOf, type ToolCall } from './agent/protocol.js';
 import { AdapterError, type ChatAdapter } from './core/adapter.js';
 import { Transcript } from './core/transcript.js';
+import { Checkpoints, type UndoPlan } from './tools/checkpoints.js';
 import { connectMcpServers, loadMcpConfig, type McpConnection } from './tools/mcp.js';
 import { nativeTools } from './tools/native.js';
 import { onExit, processGroups } from './tools/processes.js';
@@ -39,11 +40,13 @@ export interface AgentCliOptions {
 }
 
 const COMMANDS = `Commands:
-  /new      start a new chat (the model forgets the previous tasks)
-  /tools    list the tools the model can call
-  """       start or end a task on several lines
-  /help     show this list
-  /quit     exit
+  /new          start a new chat (the model forgets the previous tasks)
+  /tools        list the tools the model can call
+  /undo         put the workspace back as it was before the last change (asks first)
+  /checkpoints  list the snapshots taken before each change
+  """           start or end a task on several lines
+  /help         show this list
+  /quit         exit
 Ctrl+C while a task runs stops it after the current step; pressed again, it quits.`;
 
 type Ask = (prompt: string) => Promise<string | null>;
@@ -92,6 +95,9 @@ export async function runAgentCli(options: AgentCliOptions): Promise<void> {
       },
       notify: (message) => console.log(yellow(message)),
     });
+    const opened = await Checkpoints.open({ workspace: options.workspace, dataDir: options.dataDir });
+    const checkpoints = opened instanceof Checkpoints ? opened : undefined;
+    if (!(opened instanceof Checkpoints)) console.log(yellow(`⚠ Checkpoints are off: ${opened.unavailable}. /undo will not work.`));
     const mcpFile = options.mcpConfig ?? defaultMcpConfig(options.dataDir);
     if (mcpFile !== undefined) {
       mcp = await connectMcpServers(await loadMcpConfig(mcpFile), (message) => console.log(red(`✖ ${message}`)));
@@ -109,7 +115,18 @@ export async function runAgentCli(options: AgentCliOptions): Promise<void> {
         }),
         ...mcp.connections.flatMap((connection) => connection.tools),
       ],
-      { approve },
+      {
+        approve,
+        checkpoint: async (label) => {
+          if (!checkpoints) return;
+          try {
+            const result = await checkpoints.snapshot(`before ${label}`);
+            if (result.skipped) console.log(yellow(`⚠ ${result.skipped}`));
+          } catch (error) {
+            console.log(yellow(`⚠ No checkpoint: ${errorMessage(error)}`));
+          }
+        },
+      },
     );
 
     await adapter.open();
@@ -160,6 +177,22 @@ export async function runAgentCli(options: AgentCliOptions): Promise<void> {
         console.log(COMMANDS);
         continue;
       }
+      if (input === '/undo') {
+        await undo(checkpoints, ask, interactive);
+        continue;
+      }
+      if (input === '/checkpoints') {
+        const list = (await checkpoints?.list()) ?? [];
+        if (!checkpoints) console.log(dim('Checkpoints are off.'));
+        else if (list.length === 0) console.log(dim('No checkpoints yet: one is taken before each change.'));
+        else {
+          for (const [i, checkpoint] of list.entries()) {
+            const next = i === 0 ? dim('  ← /undo goes back to here') : '';
+            console.log(`  ${checkpoint.at.toLocaleString()}  ${safeLine(checkpoint.label)}${next}`);
+          }
+        }
+        continue;
+      }
       if (input === '/tools') {
         console.log(toolbox.list().map((tool) => `  ${safeLine(tool.name)}`).join('\n'));
         continue;
@@ -191,6 +224,41 @@ export async function runAgentCli(options: AgentCliOptions): Promise<void> {
     removeExitHandlers();
     await mcp.close();
     await adapter.close();
+  }
+}
+
+/** Shows what /undo would restore and remove, and does it after a yes typed on a terminal. */
+async function undo(checkpoints: Checkpoints | undefined, ask: Ask, interactive: boolean): Promise<void> {
+  if (!checkpoints) {
+    console.log(dim('Checkpoints are off: there is nothing to undo.'));
+    return;
+  }
+  let plan: UndoPlan | undefined;
+  try {
+    plan = await checkpoints.planUndo();
+  } catch (error) {
+    console.log(red(`✖ ${errorMessage(error)}`));
+    return;
+  }
+  if (!plan) {
+    console.log(dim('Nothing to undo: the workspace matches the checkpoints.'));
+    return;
+  }
+  console.log(`/undo goes back to ${plan.checkpoint.at.toLocaleString()}, ${safeLine(plan.checkpoint.label)}:`);
+  const lines = [...plan.restore.map((path) => `  restore ${safeLine(path)}`), ...plan.remove.map((path) => `  remove  ${safeLine(path)}`)];
+  console.log(lines.slice(0, 40).join('\n') + (lines.length > 40 ? dim(`\n  … and ${lines.length - 40} more`) : ''));
+  if (!interactive) {
+    console.log(dim('Not done: /undo needs a yes typed on a terminal.'));
+    return;
+  }
+  const answer = (await ask('Go ahead? [y/N] '))?.trim() ?? '';
+  if (!/^(y|yes|s|si|sì)$/i.test(answer)) return;
+  try {
+    const result = await checkpoints.undo(plan);
+    console.log(green(`✓ Restored ${result.restored} file${result.restored === 1 ? '' : 's'}, removed ${result.removed}.`));
+    for (const path of result.skipped) console.log(yellow(`⚠ Left in place (its folder is not where it was): ${safeLine(path)}`));
+  } catch (error) {
+    console.log(red(`✖ ${errorMessage(error)}`));
   }
 }
 
