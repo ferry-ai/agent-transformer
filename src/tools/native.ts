@@ -1,11 +1,15 @@
-import { mkdir, readdir, readFile, realpath, stat, writeFile } from 'node:fs/promises';
-import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import type { FileHandle } from 'node:fs/promises';
+import { readdir } from 'node:fs/promises';
+import { join, resolve } from 'node:path';
+import { hardLinkReason, MAX_FILE_BYTES, PathPolicy, type CheckedPath } from './paths.js';
 import { runCommand } from './shell.js';
-import { ToolError, type ApprovalSpec, type Tool } from './types.js';
+import { ToolError, type Tool, type ToolContext } from './types.js';
 
 export interface NativeToolsOptions {
   /** The workspace: file tools cannot reach outside it, commands start in it. */
   root: string;
+  /** The agent's data folder: off limits even when it lies inside the workspace. */
+  dataDir?: string;
   /** Ask before writing or editing files too, not only before commands. */
   confirmWrites?: boolean;
   /** Default and longest time a command may run. */
@@ -19,14 +23,32 @@ const MAX_DEPTH = 5;
 /** Shown in listings but not descended into. */
 const SKIPPED_DIRS = new Set(['.git', 'node_modules', '.venv', '__pycache__', 'dist']);
 
-/** File and shell tools confined to one workspace folder. */
+/** File and shell tools confined to one workspace folder. Every path goes through the PathPolicy. */
 export function nativeTools(options: NativeToolsOptions): Tool[] {
   const root = resolve(options.root);
-  const where = (path: string): Promise<string> => insideWorkspace(root, path);
-  const show = (path: string): string => relative(root, path).split(sep).join('/') || '.';
-  const writeApproval = (spec: ApprovalSpec): ApprovalSpec | undefined => (options.confirmWrites ? spec : undefined);
+  const policy = new PathPolicy({ root, dataDir: options.dataDir });
   const timeout = options.commandTimeoutMs ?? 120_000;
   const maxTimeout = options.maxCommandTimeoutMs ?? 600_000;
+
+  /** Asks when the policy has reasons (or always, with --confirm-writes); returns the reasons asked about. */
+  const confirm = async (
+    context: ToolContext,
+    checked: CheckedPath,
+    summary: string,
+    detail?: string,
+    always = false,
+  ): Promise<string[]> => {
+    if (checked.reasons.length === 0 && !always) return [];
+    await context.confirm({ summary, detail, warnings: checked.reasons });
+    return checked.reasons;
+  };
+  /** A hard link that appeared after the question was asked: refuse rather than write through it. */
+  const refuseNewHardLink = async (handle: FileHandle, checked: CheckedPath, asked: string[]): Promise<void> => {
+    const { nlink } = await handle.stat({ bigint: true });
+    if (nlink > 1n && !asked.includes(hardLinkReason(checked.display, nlink))) {
+      throw new ToolError(`${checked.display} has ${nlink} hard links now. Nothing was written; try again.`);
+    }
+  };
 
   const readFileTool: Tool = {
     name: 'read_file',
@@ -40,10 +62,11 @@ export function nativeTools(options: NativeToolsOptions): Tool[] {
       },
       required: ['path'],
     },
-    async run(args) {
-      const path = await where(String(args.path));
-      const data = await readFile(path).catch((error: unknown) => fail(error, show(path)));
-      if (data.includes(0)) throw new ToolError(`${show(path)} looks like a binary file.`);
+    async run(args, context) {
+      const checked = await policy.check(String(args.path), 'read');
+      await confirm(context, checked, `read ${checked.display}`);
+      const data = await readChecked(policy, checked, 'read');
+      if (data.includes(0)) throw new ToolError(`${checked.display} looks like a binary file.`);
       const text = data.toString('utf8');
       const lines = text.replace(/\n$/, '').split('\n');
       const offset = Math.max(1, Number(args.offset ?? 1));
@@ -68,22 +91,24 @@ export function nativeTools(options: NativeToolsOptions): Tool[] {
       required: ['path', 'content'],
     },
     body: 'content',
-    approval: (args) =>
-      writeApproval({ summary: `write ${String(args.path)} (${String(args.content).length} characters)`, detail: String(args.content) }),
-    async run(args) {
-      const path = await where(String(args.path));
+    mutates: true,
+    async run(args, context) {
       const content = String(args.content);
-      const existed = await stat(path).then(
-        (info) => {
-          if (info.isDirectory()) throw new ToolError(`${show(path)} is a folder.`);
-          return true;
-        },
-        () => false,
-      );
-      await mkdir(dirname(path), { recursive: true });
-      await writeFile(path, content);
+      const checked = await policy.check(String(args.path), 'write');
+      if (checked.info?.isDirectory()) throw new ToolError(`${checked.display} is a folder.`);
+      const summary = `write ${checked.display} (${content.length} characters)`;
+      const asked = await confirm(context, checked, summary, content, options.confirmWrites === true);
+      await policy.makeParents(checked);
+      const handle = await policy.open(checked, 'write').catch((error: unknown) => fail(error, checked.display));
+      try {
+        await refuseNewHardLink(handle, checked, asked);
+        await handle.truncate(0);
+        await handle.writeFile(content);
+      } finally {
+        await handle.close();
+      }
       const lines = content === '' ? 0 : content.split('\n').length - (content.endsWith('\n') ? 1 : 0);
-      return { ok: true, text: `${existed ? 'Overwrote' : 'Created'} ${show(path)} (${lines} lines).` };
+      return { ok: true, text: `${checked.info ? 'Overwrote' : 'Created'} ${checked.display} (${lines} lines).` };
     },
   };
 
@@ -102,31 +127,41 @@ export function nativeTools(options: NativeToolsOptions): Tool[] {
       required: ['path', 'edits'],
     },
     body: 'edits',
-    approval: (args) => writeApproval({ summary: `edit ${String(args.path)}`, detail: String(args.edits) }),
-    async run(args) {
-      const path = await where(String(args.path));
-      const original = await readFile(path, 'utf8').catch((error: unknown) => fail(error, show(path)));
-      // The model writes \n; a Windows file keeps its \r\n.
-      const eol = (text: string): string => (original.includes('\r\n') ? text.replace(/\r?\n/g, '\r\n') : text);
-      const edits = parseEdits(String(args.edits)).map((edit) => ({ search: eol(edit.search), replace: eol(edit.replace) }));
-      let content = original;
-      for (const [i, edit] of edits.entries()) {
-        const count = occurrences(content, edit.search);
-        const label = edits.length > 1 ? `Block ${i + 1}: ` : '';
-        if (count === 0) {
-          throw new ToolError(
-            `${label}the SEARCH text is not in ${show(path)}. Nothing was changed. Read the file again and copy the text exactly.`,
-          );
+    mutates: true,
+    async run(args, context) {
+      const checked = await policy.check(String(args.path), 'edit');
+      if (checked.info === undefined) throw new ToolError(`${checked.display} does not exist.`);
+      // Asked before reading: on a secret, whether a SEARCH text matches already tells something.
+      const asked = await confirm(context, checked, `edit ${checked.display}`, String(args.edits), options.confirmWrites === true);
+      const handle = await policy.open(checked, 'edit').catch((error: unknown) => fail(error, checked.display));
+      try {
+        await refuseNewHardLink(handle, checked, asked);
+        const original = (await readHandle(handle, checked)).toString('utf8');
+        // The model writes \n; a Windows file keeps its \r\n.
+        const eol = (text: string): string => (original.includes('\r\n') ? text.replace(/\r?\n/g, '\r\n') : text);
+        const edits = parseEdits(String(args.edits)).map((edit) => ({ search: eol(edit.search), replace: eol(edit.replace) }));
+        let content = original;
+        for (const [i, edit] of edits.entries()) {
+          const count = occurrences(content, edit.search);
+          const label = edits.length > 1 ? `Block ${i + 1}: ` : '';
+          if (count === 0) {
+            throw new ToolError(
+              `${label}the SEARCH text is not in ${checked.display}. Nothing was changed. Read the file again and copy the text exactly.`,
+            );
+          }
+          if (count > 1) {
+            throw new ToolError(
+              `${label}the SEARCH text appears ${count} times in ${checked.display}. Nothing was changed. Add lines around it to make it unique.`,
+            );
+          }
+          content = content.replace(edit.search, () => edit.replace);
         }
-        if (count > 1) {
-          throw new ToolError(
-            `${label}the SEARCH text appears ${count} times in ${show(path)}. Nothing was changed. Add lines around it to make it unique.`,
-          );
-        }
-        content = content.replace(edit.search, () => edit.replace);
+        await handle.truncate(0);
+        await writeAt(handle, Buffer.from(content, 'utf8'));
+        return { ok: true, text: `Edited ${checked.display}: ${edits.length} change${edits.length === 1 ? '' : 's'}.` };
+      } finally {
+        await handle.close();
       }
-      await writeFile(path, content);
-      return { ok: true, text: `Edited ${show(path)}: ${edits.length} change${edits.length === 1 ? '' : 's'}.` };
     },
   };
 
@@ -141,13 +176,13 @@ export function nativeTools(options: NativeToolsOptions): Tool[] {
       },
     },
     async run(args) {
-      const path = await where(String(args.path ?? '.'));
+      const checked = await policy.check(String(args.path ?? '.'), 'list');
       const depth = Math.min(MAX_DEPTH, Math.max(1, Number(args.depth ?? 1)));
-      const info = await stat(path).catch((error: unknown) => fail(error, show(path)));
-      if (!info.isDirectory()) throw new ToolError(`${show(path)} is not a folder.`);
+      if (checked.info === undefined) throw new ToolError(`${checked.display} does not exist.`);
+      if (!checked.info.isDirectory()) throw new ToolError(`${checked.display} is not a folder.`);
       const entries: string[] = [];
-      const truncated = await listInto(path, '', depth, entries);
-      if (entries.length === 0) return { ok: true, text: `${show(path)} is empty.` };
+      const truncated = await listInto(policy, checked.real, '', depth, entries);
+      if (entries.length === 0) return { ok: true, text: `${checked.display} is empty.` };
       const note = truncated ? `\n[stopped at ${LIST_LIMIT} entries: list a sub-folder or lower the depth]` : '';
       return { ok: true, text: entries.join('\n') + note };
     },
@@ -191,34 +226,29 @@ export function nativeTools(options: NativeToolsOptions): Tool[] {
   return [readFileTool, writeFileTool, editFileTool, listDirTool, runCommandTool];
 }
 
-/**
- * Resolves a path given by the model and refuses anything outside the workspace,
- * symbolic links included.
- */
-export async function insideWorkspace(root: string, path: string): Promise<string> {
-  if (path.trim() === '') throw new ToolError('The path is empty.');
-  const target = resolve(root, path);
-  const realRoot = await realpath(root);
-  // The deepest part of the path that exists decides where it really points.
-  let existing = target;
-  let rest = '';
-  for (;;) {
-    try {
-      existing = await realpath(existing);
-      break;
-    } catch {
-      const parent = dirname(existing);
-      if (parent === existing) break;
-      rest = rest === '' ? relative(parent, existing) : join(relative(parent, existing), rest);
-      existing = parent;
-    }
+async function readChecked(policy: PathPolicy, checked: CheckedPath, mode: 'read'): Promise<Buffer> {
+  const handle = await policy.open(checked, mode).catch((error: unknown) => fail(error, checked.display));
+  try {
+    return await readHandle(handle, checked);
+  } finally {
+    await handle.close();
   }
-  const real = rest === '' ? existing : join(existing, rest);
-  const inside = relative(realRoot, real);
-  if (inside.startsWith('..') || isAbsolute(inside)) {
-    throw new ToolError(`${path} is outside the workspace (${root}). Use paths inside it.`);
+}
+
+async function readHandle(handle: FileHandle, checked: CheckedPath): Promise<Buffer> {
+  const { size } = await handle.stat();
+  if (size > MAX_FILE_BYTES) {
+    throw new ToolError(`${checked.display} is ${Math.round(size / 1024 / 1024)} MB: too large to read (limit ${MAX_FILE_BYTES / 1024 / 1024} MB).`);
   }
-  return target;
+  return handle.readFile();
+}
+
+/** Writes all of data from the start of the file, whatever the handle's position after a read. */
+async function writeAt(handle: FileHandle, data: Buffer): Promise<void> {
+  for (let done = 0; done < data.length; ) {
+    const { bytesWritten } = await handle.write(data, done, data.length - done, done);
+    done += bytesWritten;
+  }
 }
 
 interface Edit {
@@ -251,16 +281,16 @@ function occurrences(text: string, search: string): number {
   return count;
 }
 
-/** Fills entries depth-first; returns true when the listing was cut at LIST_LIMIT. */
-async function listInto(dir: string, prefix: string, depth: number, entries: string[]): Promise<boolean> {
+/** Fills entries depth-first; returns true when the listing was cut at LIST_LIMIT. Never opens .git or the data dir. */
+async function listInto(policy: PathPolicy, dir: string, prefix: string, depth: number, entries: string[]): Promise<boolean> {
   const children = await readdir(dir, { withFileTypes: true });
   children.sort((a, b) => a.name.localeCompare(b.name));
   for (const child of children) {
     if (entries.length >= LIST_LIMIT) return true;
     const isDir = child.isDirectory();
     entries.push(`${prefix}${child.name}${isDir ? '/' : ''}`);
-    if (isDir && depth > 1 && !SKIPPED_DIRS.has(child.name)) {
-      if (await listInto(join(dir, child.name), `${prefix}${child.name}/`, depth - 1, entries)) return true;
+    if (isDir && depth > 1 && !SKIPPED_DIRS.has(child.name) && !(await policy.offLimits(join(dir, child.name)))) {
+      if (await listInto(policy, join(dir, child.name), `${prefix}${child.name}/`, depth - 1, entries)) return true;
     }
   }
   return false;
@@ -270,6 +300,7 @@ function fail(error: unknown, path: string): never {
   const code = (error as NodeJS.ErrnoException | undefined)?.code;
   if (code === 'ENOENT') throw new ToolError(`${path} does not exist.`);
   if (code === 'EISDIR') throw new ToolError(`${path} is a folder: use list_dir.`);
-  if (code === 'EACCES' || code === 'EPERM') throw new ToolError(`No permission to read ${path}.`);
+  if (code === 'ENOTDIR') throw new ToolError(`${path}: part of the path is a file, not a folder.`);
+  if (code === 'EACCES' || code === 'EPERM') throw new ToolError(`No permission to open ${path}.`);
   throw error;
 }

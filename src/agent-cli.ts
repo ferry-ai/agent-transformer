@@ -74,7 +74,7 @@ export async function runAgentCli(options: AgentCliOptions): Promise<void> {
     }
     const toolbox = new Toolbox(
       [
-        ...nativeTools({ root: options.workspace, confirmWrites: options.confirmWrites }),
+        ...nativeTools({ root: options.workspace, dataDir: options.dataDir, confirmWrites: options.confirmWrites }),
         ...mcp.connections.flatMap((connection) => connection.tools),
       ],
       { approve },

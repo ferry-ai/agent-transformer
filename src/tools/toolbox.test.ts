@@ -99,17 +99,14 @@ test('approvals get the hidden characters of the raw arguments; async approvals 
 });
 
 test('a tool can ask in the middle of a run; without an approver the answer is no', async () => {
-  let approved: boolean | undefined;
   const asking = echo({
     run: async (args, context) => {
-      approved = context.approved;
       await context.confirm({ summary: 'do the risky part' });
       return { ok: true, text: `did ${String(args.text)}` };
     },
   });
   const yes = new Toolbox([asking], { approve: async () => ({ approved: true }) });
   assert.deepEqual(await yes.call({ index: 1, tool: 'echo', args: { text: 'it' } }), { ok: true, text: 'did it' });
-  assert.equal(approved, false);
   const no = new Toolbox([asking], { approve: async () => ({ approved: false, note: 'not now' }) });
   assert.deepEqual(await no.call({ index: 1, tool: 'echo', args: { text: 'it' } }), {
     ok: false,

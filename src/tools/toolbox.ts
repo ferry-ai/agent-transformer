@@ -57,7 +57,6 @@ export class Toolbox {
       }
       const output = await tool.run(args, {
         signal,
-        approved: spec !== undefined,
         confirm: async (more) => {
           const decision = await ask(more);
           if (!decision.approved) throw new ToolError(refusal(decision));

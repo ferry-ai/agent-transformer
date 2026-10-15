@@ -22,6 +22,8 @@ export interface Tool {
    * string parameter, if there is exactly one.
    */
   readonly body?: string;
+  /** Changes files in the workspace, even when it needs no approval (write_file, edit_file). */
+  readonly mutates?: boolean;
   /**
    * What to show the user before running, or undefined when no approval is needed.
    * It may look at the disk first (and throw a ToolError to refuse the call outright).
@@ -37,8 +39,6 @@ export interface ToolOutput {
 
 export interface ToolContext {
   signal?: AbortSignal;
-  /** The user allowed this call before it started (its approval() asked). */
-  approved: boolean;
   /** Asks the user in the middle of a run; throws a ToolError when they refuse. */
   confirm(spec: ApprovalSpec): Promise<void>;
 }
