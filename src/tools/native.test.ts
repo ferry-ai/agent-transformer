@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, before, test } from 'node:test';
@@ -114,7 +114,7 @@ test('run_command asks first, then reports output and exit code', async () => {
   assert.match(result.text, /err/);
   assert.deepEqual(await call('run_command', { command: 'node -e "process.stdout.write(process.cwd())"' }), {
     ok: true,
-    text: `[exit code 0]\n${await import('node:fs/promises').then((fs) => fs.realpath(root))}`,
+    text: `[exit code 0]\n${await realpath(root)}`,
   });
 });
 
