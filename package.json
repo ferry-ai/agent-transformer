@@ -9,6 +9,7 @@
   },
   "scripts": {
     "chat": "tsx src/cli.ts",
+    "agent": "tsx src/cli.ts --agent",
     "check": "tsx src/cli.ts --check",
     "typecheck": "tsc --noEmit",
     "test": "tsx --test \"src/**/*.test.ts\""

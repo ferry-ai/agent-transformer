@@ -3,10 +3,13 @@ import { basename, join, resolve } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { parseArgs } from 'node:util';
 import { DeepSeekWebAdapter, type InspectReport } from './adapters/deepseek/index.js';
+import { FakeAdapter } from './adapters/fake/index.js';
+import { runAgentCli } from './agent-cli.js';
 import type { BrowserChoice } from './browser/launch.js';
 import { defaultDataDir } from './config.js';
 import { AdapterError, type ChatReply } from './core/adapter.js';
 import { Transcript } from './core/transcript.js';
+import { dim, errorMessage, red, ticker } from './term.js';
 
 const USAGE = `Usage: npm run chat -- [options]
 
@@ -16,8 +19,18 @@ Options:
   --show-thinking    print the model's reasoning when it is visible
   --debug            save the raw stream and HTML of every reply in the session folder
   --check            open DeepSeek, report what the connector sees, and exit
-  --data-dir <path>  where browser profiles and sessions are kept
-  -h, --help         show this help`;
+  --data-dir <path>  where browser profiles, sessions and mcp.json are kept
+  -h, --help         show this help
+
+Agent mode (the model works on your files with tools):
+  --agent              each line you type is a task for the agent
+  --task <text>        run one task in agent mode, then exit
+  --workspace <dir>    the folder the agent works in (default: the current folder)
+  --mcp <file>         MCP servers to connect (default: <data-dir>/mcp.json, if present)
+  --max-iterations <n> replies the model gets per task (default: 30)
+  --max-minutes <n>    time limit per task (default: 30)
+  --confirm-writes     ask before writing files too (shell commands always ask)
+  --replay <file>      answer with scripted replies from a JSON file instead of DeepSeek`;
 
 const COMMANDS = `Commands:
   /new             start a new chat
@@ -28,10 +41,7 @@ const COMMANDS = `Commands:
 
 const NOTICE =
   "Web mode drives chat.deepseek.com in a real browser. DeepSeek's Terms of Use forbid automated use: use it at your own risk (see README).";
-
-const tty = process.stdout.isTTY === true;
-const dim = (text: string): string => (tty ? `\x1b[2m${text}\x1b[22m` : text);
-const red = (text: string): string => (tty ? `\x1b[31m${text}\x1b[39m` : text);
+const AGENT_NOTICE = 'Everything the agent reads, files and command output included, is sent to DeepSeek.';
 
 type Ask = (prompt: string) => Promise<string | null>;
 
@@ -45,6 +55,14 @@ async function main(): Promise<void> {
       check: { type: 'boolean', default: false },
       'data-dir': { type: 'string' },
       help: { type: 'boolean', short: 'h', default: false },
+      agent: { type: 'boolean', default: false },
+      task: { type: 'string' },
+      workspace: { type: 'string' },
+      mcp: { type: 'string' },
+      'max-iterations': { type: 'string', default: '30' },
+      'max-minutes': { type: 'string', default: '30' },
+      'confirm-writes': { type: 'boolean', default: false },
+      replay: { type: 'string' },
     },
   });
   if (values.help) {
@@ -52,19 +70,38 @@ async function main(): Promise<void> {
     return;
   }
 
-  const timeoutSec = Number(values.timeout);
-  if (!Number.isFinite(timeoutSec) || timeoutSec <= 0) {
-    throw new Error(`--timeout must be a positive number of seconds, got "${values.timeout}".`);
-  }
+  const timeoutSec = positive(values.timeout, '--timeout');
   const dataDir = resolve(values['data-dir'] ?? defaultDataDir());
-  const adapter = new DeepSeekWebAdapter({
-    profileDir: join(dataDir, 'profiles', 'deepseek'),
-    browser: parseBrowser(values.browser),
-    replyTimeoutMs: timeoutSec * 1000,
-    debug: values.debug === true,
-    notify: (message) => console.log(dim(message)),
-  });
+  const browser = parseBrowser(values.browser);
+  const deepseek = (): DeepSeekWebAdapter =>
+    new DeepSeekWebAdapter({
+      profileDir: join(dataDir, 'profiles', 'deepseek'),
+      browser,
+      replyTimeoutMs: timeoutSec * 1000,
+      debug: values.debug === true,
+      notify: (message) => console.log(dim(message)),
+    });
 
+  if (values.agent || values.task !== undefined) {
+    const replay = values.replay === undefined ? undefined : resolve(values.replay);
+    if (replay === undefined) console.log(dim(`${NOTICE}\n${AGENT_NOTICE}`));
+    await runAgentCli({
+      adapter: replay === undefined ? deepseek() : await FakeAdapter.fromFile(replay),
+      label: replay === undefined ? 'DeepSeek' : 'The replay',
+      dataDir,
+      workspace: resolve(values.workspace ?? '.'),
+      mcpConfig: values.mcp === undefined ? undefined : resolve(values.mcp),
+      maxIterations: Math.floor(positive(values['max-iterations'], '--max-iterations')),
+      maxMinutes: positive(values['max-minutes'], '--max-minutes'),
+      confirmWrites: values['confirm-writes'] === true,
+      showThinking: values['show-thinking'] === true,
+      task: values.task,
+    });
+    return;
+  }
+  if (values.replay !== undefined) throw new Error('--replay works with --agent or --task.');
+
+  const adapter = deepseek();
   console.log(dim(NOTICE));
   if (values.check) {
     try {
@@ -193,19 +230,10 @@ function printReport(report: InspectReport): void {
   }
 }
 
-/** A one-line elapsed-time counter; returns the function that clears it. */
-function ticker(label: string): () => void {
-  if (!tty) return () => undefined;
-  const started = Date.now();
-  const draw = (): void => {
-    process.stdout.write(`\r${dim(`${label}… ${Math.round((Date.now() - started) / 1000)}s`)}`);
-  };
-  draw();
-  const timer = setInterval(draw, 1000);
-  return () => {
-    clearInterval(timer);
-    process.stdout.write('\r\x1b[2K');
-  };
+function positive(value: string | undefined, flag: string): number {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number <= 0) throw new Error(`${flag} must be a positive number, got "${value}".`);
+  return number;
 }
 
 function parseBrowser(value: string | undefined): BrowserChoice {
@@ -221,10 +249,6 @@ function isFile(path: string): boolean {
   } catch {
     return false;
   }
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 main().catch((error: unknown) => {

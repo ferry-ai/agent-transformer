@@ -45,30 +45,42 @@ const ARGS_KEYS = ['args', 'arguments', 'parameters', 'params', 'input'] as cons
 
 /** Finds the tool calls in a reply, in order. Prose and other code blocks are ignored. */
 export function parseToolCalls(text: string, options: ParseOptions = {}): ParsedBlock[] {
-  const blocks: ParsedBlock[] = [];
+  return scan(text, options).map((found) => found.block);
+}
+
+/** The reply without its tool blocks: what the model says to the user around the calls. */
+export function proseOf(text: string, options: ParseOptions = {}): string {
+  const lines = text.split(/\r?\n/);
+  for (const { fence } of scan(text, options).reverse()) lines.splice(fence.start, fence.end - fence.start + 1);
+  return lines.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+function scan(text: string, options: ParseOptions): { block: ParsedBlock; fence: Fence }[] {
+  const found: { block: ParsedBlock; fence: Fence }[] = [];
+  const push = (block: ParsedBlock, fence: Fence): number => found.push({ block, fence });
   for (const fence of fences(text)) {
     const [first = '', hint] = fence.info.split(/\s+/);
     const tagged = TOOL_INFO.has(first.toLowerCase());
     if (!tagged && !MAYBE_INFO.has(first.toLowerCase())) continue;
 
-    const index = blocks.length + 1;
+    const index = found.length + 1;
     const parsed = parseBlock(fence.content, tagged ? hint : undefined);
     if (!tagged) {
       // Untagged: only a well-formed call to a known tool counts, everything else is just code.
       if ('call' in parsed && parsed.explicitName && options.isTool?.(parsed.call.tool)) {
-        blocks.push({ kind: 'call', call: { ...parsed.call, index } });
+        push({ kind: 'call', call: { ...parsed.call, index } }, fence);
       }
       continue;
     }
     if (!fence.closed) {
-      blocks.push({ kind: 'error', error: { index, tool: toolName(parsed), message: NOT_CLOSED } });
+      push({ kind: 'error', error: { index, tool: toolName(parsed), message: NOT_CLOSED } }, fence);
     } else if ('error' in parsed) {
-      blocks.push({ kind: 'error', error: { index, tool: parsed.tool, message: parsed.error } });
+      push({ kind: 'error', error: { index, tool: parsed.tool, message: parsed.error } }, fence);
     } else {
-      blocks.push({ kind: 'call', call: { ...parsed.call, index } });
+      push({ kind: 'call', call: { ...parsed.call, index } }, fence);
     }
   }
-  return blocks;
+  return found;
 }
 
 export interface CallResult {
@@ -101,6 +113,9 @@ interface Fence {
   info: string;
   content: string;
   closed: boolean;
+  /** First and last line of the block, fences included. */
+  start: number;
+  end: number;
 }
 
 /**
@@ -116,6 +131,7 @@ function fences(text: string): Fence[] {
     if (!open) continue;
     const [, indent = '', marker = '', rest = ''] = open;
     if (marker.startsWith('`') && rest.includes('`')) continue; // ```inline``` on one line
+    const start = i;
     const info = rest.trim();
     const tolerant = TOOL_INFO.has((info.split(/\s+/)[0] ?? '').toLowerCase());
     const body: string[] = [];
@@ -139,7 +155,7 @@ function fences(text: string): Fence[] {
       }
       body.push(dedent(line, indent.length));
     }
-    found.push({ info, content: body.join('\n'), closed });
+    found.push({ info, content: body.join('\n'), closed, start, end: Math.min(i, lines.length - 1) });
   }
   return found;
 }

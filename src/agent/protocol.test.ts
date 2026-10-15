@@ -1,6 +1,14 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { fenceFor, formatResults, parseLenientJson, parseToolCalls, type ParsedBlock, type ToolCall } from './protocol.js';
+import {
+  fenceFor,
+  formatResults,
+  parseLenientJson,
+  parseToolCalls,
+  proseOf,
+  type ParsedBlock,
+  type ToolCall,
+} from './protocol.js';
 
 const known = new Set(['read_file', 'write_file', 'run_command']);
 const parse = (text: string): ParsedBlock[] => parseToolCalls(text, { isTool: (name) => known.has(name) });
@@ -173,4 +181,26 @@ test('results are fenced so their content cannot break out', () => {
     message,
     'Tool results:\n\n[1] read_file: ok\n````text\na ``` b\n````\n\n[2] run_command: error\n```text\nexit 1\n```\n\nContinue.',
   );
+});
+
+test('prose: the reply without its tool blocks, other code kept', () => {
+  const reply = [
+    'Reading two files.',
+    '',
+    '```tool',
+    '{"tool": "read_file", "args": {"path": "a"}}',
+    '```',
+    '',
+    '```ts',
+    'const kept = true;',
+    '```',
+    '```',
+    '{"tool": "read_file", "args": {"path": "b"}}',
+    '```',
+    '',
+    '',
+    'Then I fix them.',
+  ].join('\n');
+  assert.equal(proseOf(reply, { isTool: (name) => known.has(name) }), 'Reading two files.\n\n```ts\nconst kept = true;\n```\n\nThen I fix them.');
+  assert.equal(proseOf('Cut off:\n```tool\n{"tool": "x"'), 'Cut off:');
 });
