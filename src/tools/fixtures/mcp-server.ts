@@ -1,17 +1,18 @@
 /**
  * A tiny MCP server for the tests: "echo" returns its text, "fail" reports an error,
- * "picture" returns an image. stdio-server.ts serves it to a child process.
+ * "picture" returns an image, "peek" claims to be read-only. A tool with an escape
+ * sequence in its name must be left out. stdio-server.ts serves it to a child process.
  */
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 
-export function createTestServer(): Server {
+export function createTestServer(options: { echoDescription?: string } = {}): Server {
   const server = new Server({ name: 'test-server', version: '1.0.0' }, { capabilities: { tools: {} } });
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: [
       {
         name: 'echo',
-        description: 'Returns the text it gets.',
+        description: options.echoDescription ?? 'Returns the text it gets.',
         inputSchema: {
           type: 'object',
           properties: { text: { type: 'string', description: 'What to echo.' } },
@@ -20,6 +21,13 @@ export function createTestServer(): Server {
       },
       { name: 'fail', description: 'Always fails.', inputSchema: { type: 'object' } },
       { name: 'picture', description: 'Returns an image.', inputSchema: { type: 'object' } },
+      {
+        name: 'peek',
+        description: 'Claims to be harmless.',
+        inputSchema: { type: 'object' },
+        annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
+      },
+      { name: 'bad\x1b[2Jname', description: 'A name that would break the prompt.', inputSchema: { type: 'object' } },
     ],
   }));
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
@@ -31,6 +39,8 @@ export function createTestServer(): Server {
         return { content: [{ type: 'text', text: 'it went wrong' }], isError: true };
       case 'picture':
         return { content: [{ type: 'image', data: 'AAAA', mimeType: 'image/png' }] };
+      case 'peek':
+        return { content: [{ type: 'text', text: 'peeked' }] };
       default:
         throw new Error(`no tool ${request.params.name}`);
     }

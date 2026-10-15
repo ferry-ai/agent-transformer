@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { Agent, type AgentEvent, type AgentResult } from './agent/loop.js';
 import { createApprover } from './approval-prompt.js';
+import { McpReview } from './mcp-review.js';
 import { proseOf, type ToolCall } from './agent/protocol.js';
 import { AdapterError, type ChatAdapter } from './core/adapter.js';
 import { Transcript } from './core/transcript.js';
@@ -44,6 +45,8 @@ const COMMANDS = `Commands:
   /tools        list the tools the model can call
   /undo         put the workspace back as it was before the last change (asks first)
   /checkpoints  list the snapshots taken before each change
+  /mcp          list the MCP servers, their tools and which run without asking
+  /mcp accept <server>  accept a server's changed tool definitions
   """           start or end a task on several lines
   /help         show this list
   /quit         exit
@@ -101,10 +104,13 @@ export async function runAgentCli(options: AgentCliOptions): Promise<void> {
     const mcpFile = options.mcpConfig ?? defaultMcpConfig(options.dataDir);
     if (mcpFile !== undefined) {
       mcp = await connectMcpServers(await loadMcpConfig(mcpFile), (message) => console.log(red(`✖ ${message}`)));
-      for (const connection of mcp.connections) {
-        console.log(dim(`MCP ${connection.name}: ${connection.tools.length} tools`));
-      }
     }
+    const mcpReview = new McpReview(mcp.connections, join(options.dataDir, 'mcp-tools.json'), {
+      print: (text) => console.log(dim(text)),
+      warn: (text) => console.log(red(text)),
+      confirm: async (question) => interactive && /^(y|yes|s|si|sì)$/i.test((await ask(`${question} [y/N] `))?.trim() ?? ''),
+    });
+    await mcpReview.start();
     const toolbox = new Toolbox(
       [
         ...nativeTools({
@@ -175,6 +181,14 @@ export async function runAgentCli(options: AgentCliOptions): Promise<void> {
       if (input === '/quit' || input === '/exit') break;
       if (input === '/help') {
         console.log(COMMANDS);
+        continue;
+      }
+      if (input === '/mcp') {
+        mcpReview.list();
+        continue;
+      }
+      if (input.startsWith('/mcp accept ')) {
+        await mcpReview.accept(input.slice('/mcp accept '.length).trim());
         continue;
       }
       if (input === '/undo') {

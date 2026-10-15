@@ -5,6 +5,7 @@ import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
 import { getDefaultEnvironment, StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
+import type { ToolDefinition } from './mcp-trust.js';
 import type { JsonSchema, Tool, ToolOutput } from './types.js';
 
 /**
@@ -91,8 +92,33 @@ export function parseMcpConfig(data: unknown, baseDir: string, origin = 'MCP con
 
 export interface McpConnection {
   name: string;
+  /** What runs: the command line or the URL. */
+  target: string;
   tools: Tool[];
+  /** The definitions as the server listed them, for pinning (mcp-trust.ts). */
+  definitions: ToolDefinition[];
+  /** The tools that run without asking, from the user's config only. */
+  autoApproved: string[];
+  /** Names in "autoApprove" that the server does not have. */
+  unknownAutoApprove: string[];
+  /** Tools left out because their name could break the prompt. */
+  skipped: string[];
+  /** Whether the user accepted these definitions. Until then every call asks, auto-approved or not. */
+  trust: McpTrust;
   close(): Promise<void>;
+}
+
+export interface McpTrust {
+  accepted: boolean;
+  /** Shown in every approval prompt while the definitions are not accepted. */
+  warning?: string;
+}
+
+/** Names the MCP spec allows: they go into the prompt as headings and into tool blocks. */
+const TOOL_NAME = /^[A-Za-z0-9_.\/-]{1,128}$/;
+
+export function targetOf(config: McpServerConfig): string {
+  return config.command !== undefined ? [config.command, ...(config.args ?? [])].join(' ') : (config.url ?? '');
 }
 
 /**
@@ -112,11 +138,22 @@ export async function connectMcpServer(config: McpServerConfig, transport?: Tran
   }
 
   const tools: Tool[] = [];
+  const definitions: ToolDefinition[] = [];
+  const skipped: string[] = [];
+  // Accepted until the pins say otherwise (see agent-cli.ts).
+  const trust: McpTrust = { accepted: true };
   try {
     let cursor: string | undefined;
     do {
       const page = await client.listTools(cursor === undefined ? {} : { cursor }, { timeout: CONNECT_TIMEOUT_MS });
-      for (const tool of page.tools) tools.push(wrapTool(client, config, tool));
+      for (const tool of page.tools) {
+        if (!TOOL_NAME.test(tool.name) || definitions.some((known) => known.name === tool.name)) {
+          skipped.push(tool.name);
+          continue;
+        }
+        definitions.push(tool);
+        tools.push(wrapTool(client, config, tool, trust));
+      }
       cursor = page.nextCursor;
     } while (cursor !== undefined);
   } catch (error) {
@@ -124,7 +161,19 @@ export async function connectMcpServer(config: McpServerConfig, transport?: Tran
     throw new Error(`MCP server "${config.name}" did not list its tools: ${message(error)}`);
   }
 
-  return { name: config.name, tools, close: () => client.close() };
+  const names = definitions.map((tool) => tool.name);
+  const listed = config.autoApprove === true ? names : config.autoApprove === false ? [] : config.autoApprove;
+  return {
+    name: config.name,
+    target: targetOf(config),
+    tools,
+    definitions,
+    autoApproved: listed.filter((name) => names.includes(name)),
+    unknownAutoApprove: listed.filter((name) => !names.includes(name)),
+    skipped,
+    trust,
+    close: () => client.close(),
+  };
 }
 
 /** Connects to every server; one that fails is reported and skipped. */
@@ -173,9 +222,15 @@ interface ListedTool {
   title?: string;
   description?: string;
   inputSchema: unknown;
+  outputSchema?: unknown;
+  annotations?: unknown;
 }
 
-function wrapTool(client: Client, config: McpServerConfig, tool: ListedTool): Tool {
+/**
+ * Approval comes from the user's config only. The server's annotations (readOnlyHint,
+ * destructiveHint...) are its own claims and are never read here.
+ */
+function wrapTool(client: Client, config: McpServerConfig, tool: ListedTool, trust: McpTrust): Tool {
   const trusted = config.autoApprove === true || (Array.isArray(config.autoApprove) && config.autoApprove.includes(tool.name));
   const name = `${config.name}.${tool.name}`;
   return {
@@ -183,7 +238,11 @@ function wrapTool(client: Client, config: McpServerConfig, tool: ListedTool): To
     description: tool.description ?? tool.title ?? '',
     params: isRecord(tool.inputSchema) ? (tool.inputSchema as JsonSchema) : { type: 'object' },
     // The whole arguments, never a preview: the user approves exactly what is sent.
-    approval: trusted ? undefined : (args) => ({ summary: `call ${name}`, detail: JSON.stringify(args, null, 2) }),
+    approval: (args) => {
+      if (trusted && trust.accepted) return undefined;
+      const spec = { summary: `call ${name}`, detail: JSON.stringify(args, null, 2) };
+      return trust.accepted || trust.warning === undefined ? spec : { ...spec, warnings: [trust.warning] };
+    },
     async run(args, context) {
       const result = await client.callTool({ name: tool.name, arguments: args }, undefined, {
         timeout: config.timeoutMs ?? CALL_TIMEOUT_MS,
