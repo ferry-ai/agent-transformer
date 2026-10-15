@@ -1,0 +1,4 @@
+[
+  "Starting a helper in the background.\n\n```tool\n{\"tool\":\"run_command\",\"args\":{\"command\":\"nohup sleep 100000 >/dev/null 2>&1 &\"}}\n```\n\n```tool\n{\"tool\":\"run_command\",\"args\":{\"command\":\"node -e \\\"setInterval(()=>{},1000)\\\" &\"}}\n```",
+  "All set — the task is complete."
+]

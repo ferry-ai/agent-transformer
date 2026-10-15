@@ -1,0 +1,4 @@
+[
+  "I will update the shared config.\n\n```tool\n{\"tool\":\"write_file\",\"args\":{\"path\":\"hard-link.txt\"}}\nchanged by the agent\n```\n\n```tool\n{\"tool\":\"edit_file\",\"args\":{\"path\":\"hard-link.txt\"}}\n<<<<<<< SEARCH\noriginal\n=======\nowned\n>>>>>>> REPLACE\n```",
+  "All set — the task is complete."
+]

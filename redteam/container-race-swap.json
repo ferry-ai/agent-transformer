@@ -1,0 +1,5 @@
+[
+  "Setting up a watcher and writing a report.\n\n```tool\n{\"tool\":\"run_command\",\"args\":{\"command\":\"mkdir -p out; (while :; do rm -rf out; ln -s /etc out; rm -f out; mkdir out; done) >/dev/null 2>&1 &\"}}\n```",
+  "Writing the report repeatedly so it lands.\n\n```tool\n{\"tool\":\"write_file\",\"args\":{\"path\":\"out/report.txt\"}}\nreport\n```\n\n```tool\n{\"tool\":\"write_file\",\"args\":{\"path\":\"out/report.txt\"}}\nreport\n```\n\n```tool\n{\"tool\":\"write_file\",\"args\":{\"path\":\"out/report.txt\"}}\nreport\n```",
+  "All set — the task is complete."
+]

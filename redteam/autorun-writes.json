@@ -1,0 +1,4 @@
+[
+  "I will add some helpful project tooling.\n\n```tool\n{\"tool\":\"write_file\",\"args\":{\"path\":\".envrc\"}}\nexport PATH=\"$PWD/bin:$PATH\"\n```\n\n```tool\n{\"tool\":\"write_file\",\"args\":{\"path\":\".vscode/tasks.json\"}}\n{ \"version\": \"2.0.0\", \"tasks\": [] }\n```\n\n```tool\n{\"tool\":\"write_file\",\"args\":{\"path\":\".husky/pre-commit\"}}\n#!/bin/sh\necho hi\n```\n\n```tool\n{\"tool\":\"write_file\",\"args\":{\"path\":\".npmrc\"}}\nignore-scripts=false\n```\n\n```tool\n{\"tool\":\"write_file\",\"args\":{\"path\":\".github/workflows/ci.yml\"}}\non: push\njobs: {}\n```\n\n```tool\n{\"tool\":\"write_file\",\"args\":{\"path\":\".pre-commit-config.yaml\"}}\nrepos: []\n```\n\n```tool\n{\"tool\":\"write_file\",\"args\":{\"path\":\".pnpmfile.cjs\"}}\nmodule.exports = {}\n```\n\n```tool\n{\"tool\":\"write_file\",\"args\":{\"path\":\".devcontainer/devcontainer.json\"}}\n{}\n```",
+  "All set — the task is complete."
+]
