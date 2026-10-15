@@ -1,4 +1,5 @@
 import { existsSync } from 'node:fs';
+import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { Agent, type AgentEvent, type AgentResult } from './agent/loop.js';
@@ -9,6 +10,8 @@ import { Transcript } from './core/transcript.js';
 import { connectMcpServers, loadMcpConfig, type McpConnection } from './tools/mcp.js';
 import { nativeTools } from './tools/native.js';
 import { onExit, processGroups } from './tools/processes.js';
+import { createCommandRunner, type SandboxChoice } from './tools/sandbox.js';
+import type { CommandRunner } from './tools/shell.js';
 import { Toolbox } from './tools/toolbox.js';
 import { checkWorkspace } from './tools/workspace.js';
 import type { ToolOutput } from './tools/types.js';
@@ -27,6 +30,9 @@ export interface AgentCliOptions {
   confirmWrites: boolean;
   /** Environment variables commands get on top of the basics. */
   passEnv: string[];
+  sandbox: SandboxChoice;
+  sandboxImage: string;
+  sandboxNetwork: boolean;
   showThinking: boolean;
   /** Run this one task and exit. Without it, tasks are read from the prompt. */
   task?: string;
@@ -47,7 +53,11 @@ export async function runAgentCli(options: AgentCliOptions): Promise<void> {
   // Before anything else: the agent never starts on the filesystem root, the home folder or the data dir.
   for (const warning of await checkWorkspace(options.workspace, { dataDir: options.dataDir })) console.log(yellow(`⚠ ${warning}`));
   // What commands leave running dies with the agent: on exit, on a crash, on SIGINT, SIGTERM or SIGHUP.
-  const removeExitHandlers = onExit(() => processGroups.killAll());
+  let runner: CommandRunner | undefined;
+  const removeExitHandlers = onExit(() => {
+    processGroups.killAll();
+    runner?.closeSync();
+  });
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   const closed = new Promise<null>((done) => rl.once('close', () => done(null)));
   const ask: Ask = (prompt) => Promise.race([rl.question(prompt).catch(() => null), closed]);
@@ -63,15 +73,25 @@ export async function runAgentCli(options: AgentCliOptions): Promise<void> {
   });
 
   // Fail closed: a piped stdin could answer "y" to a prompt nobody sees.
-  const approve = createApprover({
-    ask,
-    print: (text) => console.log(text),
-    interactive: process.stdin.isTTY === true && process.stdout.isTTY === true,
-    color: tty,
-  });
+  const interactive = process.stdin.isTTY === true && process.stdout.isTTY === true;
+  const approve = createApprover({ ask, print: (text) => console.log(text), interactive, color: tty });
 
   let mcp: { connections: McpConnection[]; close: () => Promise<void> } = { connections: [], close: async () => undefined };
   try {
+    await mkdir(options.dataDir, { recursive: true });
+    runner = await createCommandRunner({
+      choice: options.sandbox,
+      image: options.sandboxImage,
+      network: options.sandboxNetwork,
+      workspace: options.workspace,
+      dataDir: options.dataDir,
+      passEnv: options.passEnv,
+      confirm: async (question) => {
+        if (!interactive) return false;
+        return /^(y|yes|s|si|sì)$/i.test((await ask(`${question} [y/N] `))?.trim() ?? '');
+      },
+      notify: (message) => console.log(yellow(message)),
+    });
     const mcpFile = options.mcpConfig ?? defaultMcpConfig(options.dataDir);
     if (mcpFile !== undefined) {
       mcp = await connectMcpServers(await loadMcpConfig(mcpFile), (message) => console.log(red(`✖ ${message}`)));
@@ -85,7 +105,7 @@ export async function runAgentCli(options: AgentCliOptions): Promise<void> {
           root: options.workspace,
           dataDir: options.dataDir,
           confirmWrites: options.confirmWrites,
-          passEnv: options.passEnv,
+          runner,
         }),
         ...mcp.connections.flatMap((connection) => connection.tools),
       ],
@@ -105,6 +125,7 @@ export async function runAgentCli(options: AgentCliOptions): Promise<void> {
       onEvent: progress.onEvent,
     });
     console.log(dim(`Workspace: ${options.workspace}`));
+    console.log((runner.warnings.length > 0 ? red : dim)(`Commands: ${runner.where}`));
     console.log(dim(`Session log: ${transcript.dir}`));
 
     const runTask = async (task: string): Promise<AgentResult> => {
@@ -166,6 +187,7 @@ export async function runAgentCli(options: AgentCliOptions): Promise<void> {
   } finally {
     rl.close();
     processGroups.killAll();
+    await runner?.close();
     removeExitHandlers();
     await mcp.close();
     await adapter.close();

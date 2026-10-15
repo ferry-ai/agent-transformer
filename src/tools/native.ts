@@ -2,7 +2,7 @@ import type { FileHandle } from 'node:fs/promises';
 import { readdir } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { hardLinkReason, MAX_FILE_BYTES, PathPolicy, type CheckedPath } from './paths.js';
-import { commandEnvironment, runCommand } from './shell.js';
+import { HostRunner, type CommandRunner } from './shell.js';
 import { ToolError, type Tool, type ToolContext } from './types.js';
 
 export interface NativeToolsOptions {
@@ -12,7 +12,9 @@ export interface NativeToolsOptions {
   dataDir?: string;
   /** Ask before writing or editing files too, not only before commands. */
   confirmWrites?: boolean;
-  /** Environment variables commands get on top of the basics (--pass-env). */
+  /** Where commands run. Default: the host, with passEnv. */
+  runner?: CommandRunner;
+  /** Environment variables host commands get on top of the basics (--pass-env). */
   passEnv?: readonly string[];
   /** Default and longest time a command may run. */
   commandTimeoutMs?: number;
@@ -29,6 +31,7 @@ const SKIPPED_DIRS = new Set(['.git', 'node_modules', '.venv', '__pycache__', 'd
 export function nativeTools(options: NativeToolsOptions): Tool[] {
   const root = resolve(options.root);
   const policy = new PathPolicy({ root, dataDir: options.dataDir });
+  const runner = options.runner ?? new HostRunner({ root, passEnv: options.passEnv });
   const timeout = options.commandTimeoutMs ?? 120_000;
   const maxTimeout = options.maxCommandTimeoutMs ?? 600_000;
 
@@ -193,7 +196,7 @@ export function nativeTools(options: NativeToolsOptions): Tool[] {
   const runCommandTool: Tool = {
     name: 'run_command',
     description:
-      'Runs a shell command in the workspace and returns its output and exit code. The user approves every command. ' +
+      `Runs a shell command and returns its output and exit code. ${runner.note} The user approves every command. ` +
       'No input can be typed: use non-interactive flags.',
     params: {
       type: 'object',
@@ -207,15 +210,18 @@ export function nativeTools(options: NativeToolsOptions): Tool[] {
       required: ['command'],
     },
     body: 'command',
-    approval: (args) => ({ summary: `run a command in ${root}`, detail: String(args.command).trimEnd() }),
+    // The exact command: only the final newlines the protocol adds are left out (trimEnd() would hide invisible characters too).
+    approval: (args) => ({
+      summary: `run a command in ${runner.cwd}`,
+      detail: String(args.command).replace(/\n+$/, ''),
+      where: runner.where,
+      warnings: [...runner.warnings],
+    }),
     async run(args, context) {
       const seconds = Number(args.timeout_sec ?? timeout / 1000);
-      const result = await runCommand(String(args.command), {
-        cwd: root,
-        env: commandEnvironment(options.passEnv),
-        timeoutMs: Math.min(maxTimeout, Math.max(1, seconds) * 1000),
-        signal: context.signal,
-      });
+      const run: { timeoutMs: number; signal?: AbortSignal } = { timeoutMs: Math.min(maxTimeout, Math.max(1, seconds) * 1000) };
+      if (context.signal) run.signal = context.signal;
+      const result = await runner.run(String(args.command), run);
       const status = result.timedOut
         ? `stopped after ${Math.round(result.durationMs / 1000)}s (timeout)`
         : result.signal

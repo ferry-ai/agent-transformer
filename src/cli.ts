@@ -9,6 +9,7 @@ import type { BrowserChoice } from './browser/launch.js';
 import { defaultDataDir } from './config.js';
 import { AdapterError, type ChatReply } from './core/adapter.js';
 import { Transcript } from './core/transcript.js';
+import { DEFAULT_SANDBOX_IMAGE, type SandboxChoice } from './tools/sandbox.js';
 import { isEnvName } from './tools/shell.js';
 import { dim, errorMessage, red, safe, ticker } from './term.js';
 
@@ -33,6 +34,10 @@ Agent mode (the model works on your files with tools):
   --confirm-writes     ask before writing files too (shell commands always ask)
   --pass-env <NAME>    give commands this environment variable too (repeat for more);
                        otherwise they only get PATH, HOME, USER, SHELL, TERM and the locale
+  --sandbox <mode>     where commands run: auto (default: a container when Docker or Podman
+                       is available, else the host with a warning), docker, podman, none
+  --sandbox-image <i>  the container image (default: ${DEFAULT_SANDBOX_IMAGE}); never pulled without asking
+  --sandbox-network    give the container network access (default: none)
   --replay <file>      answer with scripted replies from a JSON file instead of DeepSeek`;
 
 const COMMANDS = `Commands:
@@ -67,6 +72,9 @@ async function main(): Promise<void> {
       'confirm-writes': { type: 'boolean', default: false },
       replay: { type: 'string' },
       'pass-env': { type: 'string', multiple: true, default: [] },
+      sandbox: { type: 'string', default: 'auto' },
+      'sandbox-image': { type: 'string', default: DEFAULT_SANDBOX_IMAGE },
+      'sandbox-network': { type: 'boolean', default: false },
     },
   });
   if (values.help) {
@@ -99,6 +107,9 @@ async function main(): Promise<void> {
       maxMinutes: positive(values['max-minutes'], '--max-minutes'),
       confirmWrites: values['confirm-writes'] === true,
       passEnv: parsePassEnv(values['pass-env'] ?? []),
+      sandbox: parseSandbox(values.sandbox),
+      sandboxImage: values['sandbox-image'] ?? DEFAULT_SANDBOX_IMAGE,
+      sandboxNetwork: values['sandbox-network'] === true,
       showThinking: values['show-thinking'] === true,
       task: values.task,
     });
@@ -240,6 +251,13 @@ function positive(value: string | undefined, flag: string): number {
   const number = Number(value);
   if (!Number.isFinite(number) || number <= 0) throw new Error(`${flag} must be a positive number, got "${value}".`);
   return number;
+}
+
+function parseSandbox(value: string | undefined): SandboxChoice {
+  const choices: readonly SandboxChoice[] = ['auto', 'docker', 'podman', 'none'];
+  const match = choices.find((choice) => choice === value);
+  if (!match) throw new Error(`--sandbox must be one of: ${choices.join(', ')}.`);
+  return match;
 }
 
 function parsePassEnv(names: string[]): string[] {
