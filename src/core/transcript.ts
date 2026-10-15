@@ -53,8 +53,8 @@ export class Transcript {
     });
   }
 
-  async event(name: string): Promise<void> {
-    await this.append({ event: name });
+  async event(name: string, details: Record<string, unknown> = {}): Promise<void> {
+    await this.append({ event: name, ...details });
   }
 
   private async append(entry: Record<string, unknown>): Promise<void> {

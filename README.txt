@@ -18,3 +18,40 @@ responsible for how you use this tool.
 **What it will never do:** bypass captchas, solve anti-bot challenges, or disguise
 the automated browser. If a site asks for verification, Agent-Transformer stops
 and hands control back to you.
+
+## Agent mode
+
+    npm run agent                                   # tasks typed at the prompt
+    npm run agent -- --task "Fix the failing test"  # one task, then exit
+
+The agent works in `--workspace` (default: the current folder). The model asks for
+tools by writing fenced blocks tagged `tool`: a JSON line with the name and the
+arguments, then any long text (file contents, commands) as is, with no escaping.
+
+    ```tool
+    {"tool": "write_file", "args": {"path": "hello.py"}}
+    print("hello")
+    ```
+
+The results go back to the chat in the next message. A reply without tool blocks is
+the final answer. Native tools: `read_file`, `write_file`, `edit_file`
+(SEARCH/REPLACE blocks), `list_dir`, `run_command`. File tools cannot leave the
+workspace; every shell command waits for your approval (`--confirm-writes` asks
+before writes too). Each task stops after `--max-iterations` replies (30) or
+`--max-minutes` (30).
+
+**MCP servers** come from `--mcp <file>` or `<data-dir>/mcp.json`, in the usual
+`mcpServers` format. Their tools appear as `server.tool` and ask for approval unless
+listed in `autoApprove`:
+
+    { "mcpServers": {
+        "fs": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "."],
+                "autoApprove": ["read_file", "list_directory"] },
+        "docs": { "url": "https://example.com/mcp", "headers": { "Authorization": "Bearer ${DOCS_TOKEN}" } } } }
+
+**Without a browser:** `--replay script.json` answers with scripted replies (a JSON
+list of strings, or `{"error": "busy"}` to simulate a failure), to try the loop
+offline.
+
+Everything the agent reads, files and command output included, is sent to the chat
+provider: do not use it on code or data you cannot share.

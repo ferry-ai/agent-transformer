@@ -9,11 +9,13 @@
   },
   "scripts": {
     "chat": "tsx src/cli.ts",
+    "agent": "tsx src/cli.ts --agent",
     "check": "tsx src/cli.ts --check",
     "typecheck": "tsc --noEmit",
     "test": "tsx --test \"src/**/*.test.ts\""
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.1",
     "playwright": "^1.64.1"
   },
   "devDependencies": {
