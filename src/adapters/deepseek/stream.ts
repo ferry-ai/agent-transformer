@@ -1,0 +1,198 @@
+/**
+ * Reads the reply out of DeepSeek's completion stream.
+ *
+ * The stream is server-sent events whose data are JSON patches {p: path, o: op, v: value},
+ * with SET, APPEND and BATCH ops; an event carrying only "v" continues the text field
+ * written last. The reply sits in response.fragments (typed THINK, RESPONSE, ...) or, in
+ * older builds, in response.content and response.thinking_content. The format is not
+ * documented, so anything unexpected is skipped and the caller falls back to the page.
+ */
+
+export interface StreamReply {
+  content: string;
+  thinking: string;
+  status: string | undefined;
+  /** The provider swapped the answer for a canned one (content filter). */
+  filtered: boolean;
+  /** Error or toast messages sent in the stream. */
+  errors: string[];
+}
+
+type JsonObject = Record<string, unknown>;
+
+const TEXT_FIELD = /(?:^|\/)(?:content|thinking_content)$/;
+
+export function parseCompletionStream(body: string): StreamReply {
+  const root: JsonObject = {};
+  const errors: string[] = [];
+  /** Where bare {"v": "..."} continuations are appended. */
+  let textPath: string | undefined;
+
+  const apply = (path: string, op: string | undefined, value: unknown): void => {
+    if (op === 'BATCH') {
+      if (!Array.isArray(value)) return;
+      for (const sub of value) {
+        if (isObject(sub) && typeof sub.p === 'string') {
+          apply(`${path}/${sub.p}`, typeof sub.o === 'string' ? sub.o : 'SET', sub.v);
+        }
+      }
+      return;
+    }
+    const effective = op ?? (typeof value === 'string' && TEXT_FIELD.test(path) ? 'APPEND' : 'SET');
+    const target = getPath(root, path);
+    if (effective === 'APPEND' && Array.isArray(value)) {
+      const list: unknown[] = Array.isArray(target) ? target : [];
+      list.push(...value);
+      if (!Array.isArray(target)) setPath(root, path, list);
+      const newest = list.at(-1);
+      if (isObject(newest) && typeof newest.content === 'string') textPath = `${path}/-1/content`;
+      return;
+    }
+    if (effective === 'APPEND' && Array.isArray(target)) {
+      target.push(value);
+      return;
+    }
+    if (effective === 'APPEND' && typeof value === 'string') {
+      setPath(root, path, (typeof target === 'string' ? target : '') + value);
+      textPath = path;
+      return;
+    }
+    setPath(root, path, value);
+    if (typeof value === 'string' && TEXT_FIELD.test(path)) textPath = path;
+  };
+
+  for (const { event, data } of readEvents(body)) {
+    if (!isObject(data)) continue;
+    if (event === 'toast' || event === 'error') {
+      const message = data.content ?? data.message ?? data.msg;
+      if (typeof message === 'string' && message !== '') errors.push(message);
+      continue;
+    }
+    if (!('v' in data)) continue;
+    const path = typeof data.p === 'string' ? data.p : undefined;
+    const op = typeof data.o === 'string' ? data.o : undefined;
+    if (path === undefined && op === undefined && isObject(data.v)) {
+      // A snapshot of the whole state, usually the first event.
+      deepMerge(root, data.v);
+      textPath ??= initialTextPath(root);
+      continue;
+    }
+    const target = path ?? textPath;
+    if (target === undefined) continue;
+    apply(target, op ?? (path === undefined ? 'APPEND' : undefined), data.v);
+  }
+
+  return extract(root, errors);
+}
+
+function* readEvents(body: string): Generator<{ event: string; data: unknown }> {
+  for (const block of body.split(/\r?\n\r?\n/)) {
+    let event = 'message';
+    const lines: string[] = [];
+    for (const line of block.split(/\r?\n/)) {
+      if (line.startsWith('event:')) event = line.slice(6).trim();
+      else if (line.startsWith('data:')) lines.push(line.slice(5).replace(/^ /, ''));
+    }
+    if (lines.length === 0) continue;
+    try {
+      yield { event, data: JSON.parse(lines.join('\n')) };
+    } catch {
+      // Keep-alives and plain text carry nothing to apply.
+    }
+  }
+}
+
+function extract(root: JsonObject, errors: string[]): StreamReply {
+  const response = isObject(root.response) ? root.response : root;
+  let content = '';
+  let thinking = '';
+  let filtered = false;
+  if (Array.isArray(response.fragments)) {
+    for (const fragment of response.fragments) {
+      if (!isObject(fragment) || typeof fragment.content !== 'string') continue;
+      const type = typeof fragment.type === 'string' ? fragment.type.toUpperCase() : 'RESPONSE';
+      if (type === 'THINK' || type === 'THINKING') {
+        thinking += fragment.content;
+      } else if (type === 'RESPONSE' || type === 'ANSWER') {
+        content += fragment.content;
+      } else if (type === 'TEMPLATE_RESPONSE') {
+        content += fragment.content;
+        filtered = true;
+      }
+      // TIP, WARNING, SEARCH and other fragments decorate the page; they are not the answer.
+    }
+  } else {
+    if (typeof response.content === 'string') content = response.content;
+    if (typeof response.thinking_content === 'string') thinking = response.thinking_content;
+  }
+  const status = typeof response.status === 'string' ? response.status : undefined;
+  if (status === 'CONTENT_FILTER') filtered = true;
+  return { content, thinking, status, filtered, errors };
+}
+
+function initialTextPath(root: JsonObject): string | undefined {
+  const response = root.response;
+  if (!isObject(response)) return undefined;
+  if (Array.isArray(response.fragments) && response.fragments.length > 0) return 'response/fragments/-1/content';
+  if (typeof response.content === 'string') return 'response/content';
+  return undefined;
+}
+
+function getPath(root: JsonObject, path: string): unknown {
+  let node: unknown = root;
+  for (const key of path.split('/').filter(Boolean)) {
+    if (Array.isArray(node)) node = node[key === '-1' ? node.length - 1 : Number(key)];
+    else if (isObject(node)) node = node[key];
+    else return undefined;
+  }
+  return node;
+}
+
+function setPath(root: JsonObject, path: string, value: unknown): void {
+  const keys = path.split('/').filter(Boolean);
+  let node: JsonObject | unknown[] = root;
+  for (let i = 0; i < keys.length; i += 1) {
+    const key = keys[i] ?? '';
+    const isLast = i === keys.length - 1;
+    if (Array.isArray(node)) {
+      const index = key === '-1' ? Math.max(node.length - 1, 0) : Number(key);
+      if (isLast) {
+        node[index] = value;
+        return;
+      }
+      const next: unknown = node[index];
+      if (isObject(next) || Array.isArray(next)) {
+        node = next;
+      } else {
+        const fresh: JsonObject = {};
+        node[index] = fresh;
+        node = fresh;
+      }
+    } else {
+      if (isLast) {
+        node[key] = value;
+        return;
+      }
+      const next: unknown = node[key];
+      if (isObject(next) || Array.isArray(next)) {
+        node = next;
+      } else {
+        const fresh: JsonObject = {};
+        node[key] = fresh;
+        node = fresh;
+      }
+    }
+  }
+}
+
+function deepMerge(target: JsonObject, source: JsonObject): void {
+  for (const [key, value] of Object.entries(source)) {
+    const current = target[key];
+    if (isObject(current) && isObject(value)) deepMerge(current, value);
+    else target[key] = value;
+  }
+}
+
+function isObject(value: unknown): value is JsonObject {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}

@@ -1,0 +1,24 @@
+{
+  "name": "agent-transformer",
+  "version": "0.1.0",
+  "description": "Use a web chat as the model of a local agent.",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "chat": "tsx src/cli.ts",
+    "check": "tsx src/cli.ts --check",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test \"src/**/*.test.ts\""
+  },
+  "dependencies": {
+    "playwright": "^1.64.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  }
+}

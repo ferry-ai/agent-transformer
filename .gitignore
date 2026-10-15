@@ -1,0 +1,10 @@
+node_modules/
+dist/
+*.log
+.env
+
+# Browser profiles hold session cookies and session logs hold conversations.
+# They live outside the repo by default (see src/config.ts); never commit them
+# even if --data-dir points here.
+profiles/
+sessions/
