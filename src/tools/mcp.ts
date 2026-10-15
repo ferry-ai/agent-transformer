@@ -6,6 +6,7 @@ import { getDefaultEnvironment, StdioClientTransport } from '@modelcontextprotoc
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import type { ToolDefinition } from './mcp-trust.js';
+import { redactSecrets } from './redact.js';
 import type { JsonSchema, Tool, ToolOutput } from './types.js';
 
 /**
@@ -248,7 +249,8 @@ function wrapTool(client: Client, config: McpServerConfig, tool: ListedTool, tru
         timeout: config.timeoutMs ?? CALL_TIMEOUT_MS,
         signal: context.signal,
       });
-      return toOutput(result);
+      const output = toOutput(result);
+      return { ok: output.ok, text: redactSecrets(output.text).text };
     },
   };
 }

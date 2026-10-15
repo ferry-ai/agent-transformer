@@ -2,6 +2,7 @@ import type { FileHandle } from 'node:fs/promises';
 import { readdir } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { dangerHints } from './hints.js';
+import { redactSecrets } from './redact.js';
 import { hardLinkReason, MAX_FILE_BYTES, PathPolicy, type CheckedPath } from './paths.js';
 import { HostRunner, type CommandRunner } from './shell.js';
 import { ToolError, type Tool, type ToolContext } from './types.js';
@@ -229,7 +230,8 @@ export function nativeTools(options: NativeToolsOptions): Tool[] {
         : result.signal
           ? `killed by ${result.signal}`
           : `exit code ${result.exitCode}`;
-      const output = result.output.trimEnd();
+      // A stray "cat .env" or "env": obvious secrets are masked before the output reaches the chat.
+      const output = redactSecrets(result.output.trimEnd()).text;
       return { ok: result.exitCode === 0 && !result.timedOut, text: `[${status}]${output === '' ? '' : `\n${output}`}` };
     },
   };

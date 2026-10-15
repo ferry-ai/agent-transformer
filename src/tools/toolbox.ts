@@ -1,4 +1,5 @@
 import type { ToolCall } from '../agent/protocol.js';
+import { holdsRedaction, REDACTION_MARK } from './redact.js';
 import { countHidden } from './sanitize.js';
 import { ToolError, type ApprovalDecision, type ApprovalSpec, type Approve, type JsonSchema, type Tool, type ToolOutput } from './types.js';
 
@@ -51,6 +52,15 @@ export class Toolbox {
     }
     try {
       const args = prepareArgs(tool, call);
+      // A redacted text written back would destroy the secret it hid: refused for every tool, before anything runs.
+      if (holdsRedaction(args)) {
+        return {
+          ok: false,
+          text:
+            `Refused: the arguments contain "[${REDACTION_MARK}: …]". That marks a secret hidden from you, and writing ` +
+            'it back would destroy the original. Leave those parts out, or ask the user to make that change.',
+        };
+      }
       // Counted on the raw arguments: the prompt shows them escaped, the count says there was something to escape.
       const hidden = countHidden(args);
       const ask = async (spec: ApprovalSpec): Promise<ApprovalDecision> =>
