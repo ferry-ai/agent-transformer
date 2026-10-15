@@ -9,7 +9,10 @@ import type { BrowserChoice } from './browser/launch.js';
 import { defaultDataDir } from './config.js';
 import { AdapterError, type ChatReply } from './core/adapter.js';
 import { Transcript } from './core/transcript.js';
-import { dim, errorMessage, red, ticker } from './term.js';
+import { preparePrivateDataDir } from './tools/data-dir.js';
+import { DEFAULT_SANDBOX_IMAGE, type SandboxChoice } from './tools/sandbox.js';
+import { isEnvName } from './tools/shell.js';
+import { dim, errorMessage, red, safe, ticker, yellow } from './term.js';
 
 const USAGE = `Usage: npm run chat -- [options]
 
@@ -30,6 +33,12 @@ Agent mode (the model works on your files with tools):
   --max-iterations <n> replies the model gets per task (default: 30)
   --max-minutes <n>    time limit per task (default: 30)
   --confirm-writes     ask before writing files too (shell commands always ask)
+  --pass-env <NAME>    give commands this environment variable too (repeat for more);
+                       otherwise they only get PATH, HOME, USER, SHELL, TERM and the locale
+  --sandbox <mode>     where commands run: auto (default: a container when Docker or Podman
+                       is available, else the host with a warning), docker, podman, none
+  --sandbox-image <i>  the container image (default: ${DEFAULT_SANDBOX_IMAGE}); never pulled without asking
+  --sandbox-network    give the container network access (default: none)
   --replay <file>      answer with scripted replies from a JSON file instead of DeepSeek`;
 
 const COMMANDS = `Commands:
@@ -63,6 +72,10 @@ async function main(): Promise<void> {
       'max-minutes': { type: 'string', default: '30' },
       'confirm-writes': { type: 'boolean', default: false },
       replay: { type: 'string' },
+      'pass-env': { type: 'string', multiple: true, default: [] },
+      sandbox: { type: 'string', default: 'auto' },
+      'sandbox-image': { type: 'string', default: DEFAULT_SANDBOX_IMAGE },
+      'sandbox-network': { type: 'boolean', default: false },
     },
   });
   if (values.help) {
@@ -72,6 +85,10 @@ async function main(): Promise<void> {
 
   const timeoutSec = positive(values.timeout, '--timeout');
   const dataDir = resolve(values['data-dir'] ?? defaultDataDir());
+  // Profiles, sessions and checkpoints are private: 0700 folders, 0600 files.
+  for (const warning of await preparePrivateDataDir(dataDir, { isDefault: values['data-dir'] === undefined })) {
+    console.log(yellow(`⚠ ${warning}`));
+  }
   const browser = parseBrowser(values.browser);
   const deepseek = (): DeepSeekWebAdapter =>
     new DeepSeekWebAdapter({
@@ -94,6 +111,10 @@ async function main(): Promise<void> {
       maxIterations: Math.floor(positive(values['max-iterations'], '--max-iterations')),
       maxMinutes: positive(values['max-minutes'], '--max-minutes'),
       confirmWrites: values['confirm-writes'] === true,
+      passEnv: parsePassEnv(values['pass-env'] ?? []),
+      sandbox: parseSandbox(values.sandbox),
+      sandboxImage: values['sandbox-image'] ?? DEFAULT_SANDBOX_IMAGE,
+      sandboxNetwork: values['sandbox-network'] === true,
       showThinking: values['show-thinking'] === true,
       task: values.task,
     });
@@ -205,7 +226,7 @@ async function readBlock(ask: Ask): Promise<string | null> {
 
 function printReply(reply: ChatReply, showThinking: boolean): void {
   if (showThinking && reply.thinking) console.log(`${dim(reply.thinking)}\n`);
-  console.log(reply.text);
+  console.log(safe(reply.text));
   const notes = [reply.source, `${(reply.durationMs / 1000).toFixed(1)}s`];
   if (reply.thinking && !showThinking) notes.push('reasoning hidden: --show-thinking');
   if (reply.filtered) notes.push('answer replaced by DeepSeek');
@@ -214,8 +235,9 @@ function printReply(reply: ChatReply, showThinking: boolean): void {
 
 function printReport(report: InspectReport): void {
   const yesNo = (value: boolean): string => (value ? 'yes' : 'no');
+  // The title and the URL come from the website.
   console.log(
-    [
+    safe([
       `Browser:       ${report.browser}`,
       `Page:          ${report.url}  (${report.title})`,
       `Message box:   ${yesNo(report.inputVisible)}`,
@@ -223,7 +245,7 @@ function printReport(report: InspectReport): void {
       `Markdown:      ${report.markdownBlocks}`,
       `File input:    ${yesNo(report.fileInputs > 0)}`,
       `Verification:  ${report.verificationFrames > 0 ? 'shown' : 'none'}`,
-    ].join('\n'),
+    ].join('\n')),
   );
   if (!report.inputVisible) {
     console.log(dim('No message box: probably not logged in yet. Run "npm run chat" and log in in the browser window.'));
@@ -234,6 +256,21 @@ function positive(value: string | undefined, flag: string): number {
   const number = Number(value);
   if (!Number.isFinite(number) || number <= 0) throw new Error(`${flag} must be a positive number, got "${value}".`);
   return number;
+}
+
+function parseSandbox(value: string | undefined): SandboxChoice {
+  const choices: readonly SandboxChoice[] = ['auto', 'docker', 'podman', 'none'];
+  const match = choices.find((choice) => choice === value);
+  if (!match) throw new Error(`--sandbox must be one of: ${choices.join(', ')}.`);
+  return match;
+}
+
+function parsePassEnv(names: string[]): string[] {
+  for (const name of names) {
+    if (!isEnvName(name)) throw new Error(`--pass-env takes a variable name, got "${name}".`);
+    if (process.env[name] === undefined) console.log(dim(`--pass-env ${name}: not set, so commands will not get it.`));
+  }
+  return names;
 }
 
 function parseBrowser(value: string | undefined): BrowserChoice {

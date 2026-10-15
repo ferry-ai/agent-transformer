@@ -1,11 +1,19 @@
 import type { ToolCall } from '../agent/protocol.js';
-import { ToolError, type Approve, type JsonSchema, type Tool, type ToolOutput } from './types.js';
+import { holdsRedaction, REDACTION_MARK } from './redact.js';
+import { countHidden } from './sanitize.js';
+import { ToolError, type ApprovalDecision, type ApprovalSpec, type Approve, type JsonSchema, type Tool, type ToolOutput } from './types.js';
 
 export interface ToolboxOptions {
   /** Asks the user before a tool that needs approval runs. Without it, such calls are denied. */
   approve?: Approve;
   /** Longest result text sent back to the chat; the middle of longer ones is cut. */
   maxResultChars?: number;
+  /**
+   * Called before a call that may change the workspace runs: one that mutates, or one
+   * the user had to approve (commands, MCP calls). It reports its own failures: the
+   * call goes on even when no checkpoint could be taken.
+   */
+  checkpoint?: (label: string) => Promise<void>;
 }
 
 const DEFAULT_MAX_RESULT_CHARS = 20_000;
@@ -44,23 +52,51 @@ export class Toolbox {
     }
     try {
       const args = prepareArgs(tool, call);
-      const action = tool.approval?.(args);
-      if (action !== undefined) {
-        const decision = this.options.approve
-          ? await this.options.approve({ tool: tool.name, summary: action })
-          : { approved: false };
-        if (!decision.approved) {
-          const note = decision.note ? ` The user says: ${decision.note}` : '';
-          return { ok: false, text: `The user did not allow this call.${note}` };
-        }
+      // A redacted text written back would destroy the secret it hid: refused for every tool, before anything runs.
+      if (holdsRedaction(args)) {
+        return {
+          ok: false,
+          text:
+            `Refused: the arguments contain "[${REDACTION_MARK}: …]". That marks a secret hidden from you, and writing ` +
+            'it back would destroy the original. Leave those parts out, or ask the user to make that change.',
+        };
       }
-      const output = await tool.run(args, { signal });
+      // Counted on the raw arguments: the prompt shows them escaped, the count says there was something to escape.
+      const hidden = countHidden(args);
+      const ask = async (spec: ApprovalSpec): Promise<ApprovalDecision> =>
+        this.options.approve ? this.options.approve({ ...spec, tool: tool.name, hidden }) : { approved: false };
+      const requested = await tool.approval?.(args);
+      const spec = typeof requested === 'string' ? { summary: requested } : requested;
+      if (spec !== undefined) {
+        const decision = await ask(spec);
+        if (!decision.approved) return { ok: false, text: refusal(decision) };
+      }
+      if (tool.mutates === true || spec !== undefined) await this.options.checkpoint?.(label(tool, args)).catch(() => undefined);
+      const output = await tool.run(args, {
+        signal,
+        confirm: async (more) => {
+          const decision = await ask(more);
+          if (!decision.approved) throw new ToolError(refusal(decision));
+        },
+      });
       return { ok: output.ok, text: truncate(output.text, this.options.maxResultChars ?? DEFAULT_MAX_RESULT_CHARS) };
     } catch (error) {
       if (error instanceof ToolError) return { ok: false, text: error.message };
       return { ok: false, text: `The tool failed: ${error instanceof Error ? error.message : String(error)}` };
     }
   }
+}
+
+/** "write_file src/app.py", "run_command npm test": what the checkpoint was taken before. */
+function label(tool: Tool, args: Record<string, unknown>): string {
+  const what = typeof args.path === 'string' ? args.path : typeof args.command === 'string' ? args.command : '';
+  const line = what.split('\n').find((part) => part.trim() !== '') ?? '';
+  return `${tool.name}${line === '' ? '' : ` ${line.trim().slice(0, 120)}`}`;
+}
+
+function refusal(decision: ApprovalDecision): string {
+  const note = decision.note ? ` The user says: ${decision.note}` : '';
+  return `The user did not allow this call.${note}`;
 }
 
 /** Puts the body in its parameter, then checks the arguments against the schema. */

@@ -256,7 +256,7 @@ test('end to end with the native tools and a transcript on disk', async () => {
     adapter,
     toolbox: new Toolbox(nativeTools({ root }), {
       approve: async (request) => {
-        approvals.push(request.summary);
+        approvals.push(request.detail ?? '');
         return { approved: true };
       },
     }),
@@ -268,7 +268,7 @@ test('end to end with the native tools and a transcript on disk', async () => {
   assert.equal(result.toolCalls, 4);
   assert.equal(await readFile(join(root, 'app.py'), 'utf8'), 'def greet():\n    return "hello"\n');
   assert.equal(await readFile(join(root, 'NOTES.md'), 'utf8'), 'Run:\n```\npython app.py\n```\n');
-  assert.deepEqual(approvals, [`run in ${root}:\necho checked`]);
+  assert.deepEqual(approvals, ['echo checked']);
   assert.match(adapter.sent[2]?.message ?? '', /\[3\] run_command: ok\n```text\n\[exit code 0\]\nchecked\n```/);
 
   const lines = (await readFile(join(transcript.dir, 'transcript.jsonl'), 'utf8')).trim().split('\n').map((line) => JSON.parse(line));

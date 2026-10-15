@@ -12,6 +12,7 @@ export interface TurnRecord {
 /**
  * One folder per session: transcript.jsonl, plus the raw stream and HTML of each
  * reply when the adapter runs in debug mode. These logs feed the replay tests later.
+ * They hold everything the model read, so the folder is 0700 and its files 0600.
  */
 export class Transcript {
   readonly dir: string;
@@ -24,7 +25,7 @@ export class Transcript {
   static async create(dataDir: string, adapter: string): Promise<Transcript> {
     const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
     const dir = join(dataDir, 'sessions', `${stamp}-${adapter}`);
-    await mkdir(dir, { recursive: true });
+    await mkdir(dir, { recursive: true, mode: 0o700 });
     return new Transcript(dir);
   }
 
@@ -33,10 +34,10 @@ export class Transcript {
     const id = String(this.turns).padStart(3, '0');
     const { reply, error } = record;
     if (reply?.raw?.stream !== undefined) {
-      await writeFile(join(this.dir, `turn-${id}-stream.txt`), reply.raw.stream);
+      await writeFile(join(this.dir, `turn-${id}-stream.txt`), reply.raw.stream, { mode: 0o600 });
     }
     if (reply?.raw?.html !== undefined) {
-      await writeFile(join(this.dir, `turn-${id}-message.html`), reply.raw.html);
+      await writeFile(join(this.dir, `turn-${id}-message.html`), reply.raw.html, { mode: 0o600 });
     }
     await this.append({
       turn: this.turns,
@@ -59,7 +60,7 @@ export class Transcript {
 
   private async append(entry: Record<string, unknown>): Promise<void> {
     const line = JSON.stringify({ at: new Date().toISOString(), ...entry });
-    await appendFile(join(this.dir, 'transcript.jsonl'), `${line}\n`);
+    await appendFile(join(this.dir, 'transcript.jsonl'), `${line}\n`, { mode: 0o600 });
   }
 }
 

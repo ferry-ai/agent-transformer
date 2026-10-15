@@ -22,8 +22,13 @@ export interface Tool {
    * string parameter, if there is exactly one.
    */
   readonly body?: string;
-  /** Returns what to show the user before running, or undefined when no approval is needed. */
-  approval?(args: Record<string, unknown>): string | undefined;
+  /** Changes files in the workspace, even when it needs no approval (write_file, edit_file). */
+  readonly mutates?: boolean;
+  /**
+   * What to show the user before running, or undefined when no approval is needed.
+   * It may look at the disk first (and throw a ToolError to refuse the call outright).
+   */
+  approval?(args: Record<string, unknown>): ApprovalSpec | string | undefined | Promise<ApprovalSpec | string | undefined>;
   run(args: Record<string, unknown>, context: ToolContext): Promise<ToolOutput>;
 }
 
@@ -34,12 +39,26 @@ export interface ToolOutput {
 
 export interface ToolContext {
   signal?: AbortSignal;
+  /** Asks the user in the middle of a run; throws a ToolError when they refuse. */
+  confirm(spec: ApprovalSpec): Promise<void>;
 }
 
-export interface ApprovalRequest {
-  tool: string;
-  /** What the call is about to do, in words the user can judge. */
+/** What a call is about to do, as the user sees it before allowing it. */
+export interface ApprovalSpec {
+  /** One line, in words the user can judge: "write src/app.py (120 characters)". */
   summary: string;
+  /** The whole command or the full arguments, shown as they are under the summary. */
+  detail?: string;
+  /** Where it runs, such as "[sandbox: docker, network off]" or "[HOST, not sandboxed]". */
+  where?: string;
+  /** Reasons to look twice, one line each. */
+  warnings?: string[];
+}
+
+export interface ApprovalRequest extends ApprovalSpec {
+  tool: string;
+  /** Invisible or control characters in the raw arguments: they are shown escaped and deserve a warning. */
+  hidden: number;
 }
 
 export interface ApprovalDecision {
