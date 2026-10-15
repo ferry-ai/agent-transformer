@@ -120,7 +120,8 @@ test('.git is mounted read-only, the data dir hidden, the network only on reques
   const args = runArgs(settings({ gitDir: true, dataDir: '/home/me/project/.agent', network: true }));
   assert.deepEqual(values(args, '--mount'), [
     'type=bind,source=/home/me/project,target=/workspace',
-    'type=bind,source=/home/me/project/.git,target=/workspace/.git,readonly',
+    // A host path, so joined with the host's separator: "\" on Windows.
+    `type=bind,source=${join('/home/me/project', '.git')},target=/workspace/.git,readonly`,
     'type=tmpfs,target=/workspace/.agent,tmpfs-size=4096,tmpfs-mode=0',
   ]);
   assert.deepEqual(values(args, '--network'), []);
