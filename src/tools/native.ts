@@ -2,7 +2,7 @@ import type { FileHandle } from 'node:fs/promises';
 import { readdir } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { hardLinkReason, MAX_FILE_BYTES, PathPolicy, type CheckedPath } from './paths.js';
-import { runCommand } from './shell.js';
+import { commandEnvironment, runCommand } from './shell.js';
 import { ToolError, type Tool, type ToolContext } from './types.js';
 
 export interface NativeToolsOptions {
@@ -12,6 +12,8 @@ export interface NativeToolsOptions {
   dataDir?: string;
   /** Ask before writing or editing files too, not only before commands. */
   confirmWrites?: boolean;
+  /** Environment variables commands get on top of the basics (--pass-env). */
+  passEnv?: readonly string[];
   /** Default and longest time a command may run. */
   commandTimeoutMs?: number;
   maxCommandTimeoutMs?: number;
@@ -210,6 +212,7 @@ export function nativeTools(options: NativeToolsOptions): Tool[] {
       const seconds = Number(args.timeout_sec ?? timeout / 1000);
       const result = await runCommand(String(args.command), {
         cwd: root,
+        env: commandEnvironment(options.passEnv),
         timeoutMs: Math.min(maxTimeout, Math.max(1, seconds) * 1000),
         signal: context.signal,
       });

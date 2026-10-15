@@ -9,6 +9,7 @@ import type { BrowserChoice } from './browser/launch.js';
 import { defaultDataDir } from './config.js';
 import { AdapterError, type ChatReply } from './core/adapter.js';
 import { Transcript } from './core/transcript.js';
+import { isEnvName } from './tools/shell.js';
 import { dim, errorMessage, red, safe, ticker } from './term.js';
 
 const USAGE = `Usage: npm run chat -- [options]
@@ -30,6 +31,8 @@ Agent mode (the model works on your files with tools):
   --max-iterations <n> replies the model gets per task (default: 30)
   --max-minutes <n>    time limit per task (default: 30)
   --confirm-writes     ask before writing files too (shell commands always ask)
+  --pass-env <NAME>    give commands this environment variable too (repeat for more);
+                       otherwise they only get PATH, HOME, USER, SHELL, TERM and the locale
   --replay <file>      answer with scripted replies from a JSON file instead of DeepSeek`;
 
 const COMMANDS = `Commands:
@@ -63,6 +66,7 @@ async function main(): Promise<void> {
       'max-minutes': { type: 'string', default: '30' },
       'confirm-writes': { type: 'boolean', default: false },
       replay: { type: 'string' },
+      'pass-env': { type: 'string', multiple: true, default: [] },
     },
   });
   if (values.help) {
@@ -94,6 +98,7 @@ async function main(): Promise<void> {
       maxIterations: Math.floor(positive(values['max-iterations'], '--max-iterations')),
       maxMinutes: positive(values['max-minutes'], '--max-minutes'),
       confirmWrites: values['confirm-writes'] === true,
+      passEnv: parsePassEnv(values['pass-env'] ?? []),
       showThinking: values['show-thinking'] === true,
       task: values.task,
     });
@@ -235,6 +240,14 @@ function positive(value: string | undefined, flag: string): number {
   const number = Number(value);
   if (!Number.isFinite(number) || number <= 0) throw new Error(`${flag} must be a positive number, got "${value}".`);
   return number;
+}
+
+function parsePassEnv(names: string[]): string[] {
+  for (const name of names) {
+    if (!isEnvName(name)) throw new Error(`--pass-env takes a variable name, got "${name}".`);
+    if (process.env[name] === undefined) console.log(dim(`--pass-env ${name}: not set, so commands will not get it.`));
+  }
+  return names;
 }
 
 function parseBrowser(value: string | undefined): BrowserChoice {

@@ -138,3 +138,26 @@ test('without an approver, calls that need approval are denied', async () => {
   const result = await strict.call({ index: 1, tool: 'run_command', args: { command: 'echo hi' } });
   assert.equal(result.ok, false);
 });
+
+test('commands get a clean environment: no tokens unless passed with --pass-env', async () => {
+  process.env.AGENT_TEST_TOKEN = 'ghp_not_for_the_chat';
+  process.env.LC_TIME = 'C';
+  const printEnv = `"${process.execPath}" -e "process.stdout.write(JSON.stringify(process.env))"`;
+  try {
+    const plain = JSON.parse((await call('run_command', { command: printEnv })).text.replace(/^\[exit code 0\]\n/, ''));
+    assert.equal(plain.AGENT_TEST_TOKEN, undefined);
+    assert.equal(plain.LC_TIME, 'C');
+    assert.ok(plain.PATH);
+    const allowed = Object.keys(plain).filter((name) => !/^(LANG|LANGUAGE|LC_\w+|TZ)$/.test(name));
+    for (const name of allowed) {
+      assert.ok(['HOME', 'LOGNAME', 'PATH', 'SHELL', 'TERM', 'USER', 'PWD', 'SHLVL', '_', 'OLDPWD'].includes(name) || process.platform === 'win32', name);
+    }
+
+    const passing = new Toolbox(nativeTools({ root, passEnv: ['AGENT_TEST_TOKEN'] }), { approve: async () => ({ approved: true }) });
+    const passed = await passing.call({ index: 1, tool: 'run_command', args: { command: printEnv } });
+    assert.equal(JSON.parse(passed.text.replace(/^\[exit code 0\]\n/, '')).AGENT_TEST_TOKEN, 'ghp_not_for_the_chat');
+  } finally {
+    delete process.env.AGENT_TEST_TOKEN;
+    delete process.env.LC_TIME;
+  }
+});

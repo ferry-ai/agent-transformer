@@ -24,6 +24,8 @@ export interface AgentCliOptions {
   maxIterations: number;
   maxMinutes: number;
   confirmWrites: boolean;
+  /** Environment variables commands get on top of the basics. */
+  passEnv: string[];
   showThinking: boolean;
   /** Run this one task and exit. Without it, tasks are read from the prompt. */
   task?: string;
@@ -76,7 +78,12 @@ export async function runAgentCli(options: AgentCliOptions): Promise<void> {
     }
     const toolbox = new Toolbox(
       [
-        ...nativeTools({ root: options.workspace, dataDir: options.dataDir, confirmWrites: options.confirmWrites }),
+        ...nativeTools({
+          root: options.workspace,
+          dataDir: options.dataDir,
+          confirmWrites: options.confirmWrites,
+          passEnv: options.passEnv,
+        }),
         ...mcp.connections.flatMap((connection) => connection.tools),
       ],
       { approve },
