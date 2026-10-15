@@ -1,0 +1,49 @@
+name: CI
+
+# Pull requests, and pushes to main once merged. Pushes to other branches are left out:
+# a branch with an open pull request would otherwise run every job twice.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer commit on the same pull request (or branch) cancels the run it supersedes.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run typecheck
+
+      # Without the image, src/tools/sandbox.test.ts skips its real-container test
+      # ("needs Docker or Podman and the image, already present"). Only the Linux
+      # runners have a Docker that runs Linux images: elsewhere that test keeps skipping.
+      - name: Pull the sandbox image for the real-container test (Linux)
+        if: runner.os == 'Linux'
+        run: docker pull docker.io/library/node:24-bookworm
+
+      - run: npm test
