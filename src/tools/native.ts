@@ -1,6 +1,7 @@
 import type { FileHandle } from 'node:fs/promises';
 import { readdir } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
+import { dangerHints } from './hints.js';
 import { hardLinkReason, MAX_FILE_BYTES, PathPolicy, type CheckedPath } from './paths.js';
 import { HostRunner, type CommandRunner } from './shell.js';
 import { ToolError, type Tool, type ToolContext } from './types.js';
@@ -215,7 +216,8 @@ export function nativeTools(options: NativeToolsOptions): Tool[] {
       summary: `run a command in ${runner.cwd}`,
       detail: String(args.command).replace(/\n+$/, ''),
       where: runner.where,
-      warnings: [...runner.warnings],
+      // Hints are a pattern match, easy to get around: they point the user's attention, nothing more.
+      warnings: [...runner.warnings, ...dangerHints(String(args.command)).map((hint) => `hint: ${hint}`)],
     }),
     async run(args, context) {
       const seconds = Number(args.timeout_sec ?? timeout / 1000);
