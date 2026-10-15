@@ -398,6 +398,10 @@ export interface SandboxOptions {
 export async function createCommandRunner(options: SandboxOptions): Promise<CommandRunner> {
   const exec = options.exec ?? execRuntime;
   if (options.choice === 'none') return new HostRunner({ root: options.workspace, passEnv: options.passEnv });
+  // The image goes on the "run" command line before the container's command: "-..." would be read as an option.
+  if (!/^[A-Za-z0-9][A-Za-z0-9._/:@-]*$/.test(options.image)) {
+    throw new Error(`--sandbox-image: ${JSON.stringify(options.image)} is not an image name.`);
+  }
 
   const { info, problems } = await detectRuntime(options.choice, exec);
   if (info === undefined) {
