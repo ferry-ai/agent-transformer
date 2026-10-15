@@ -55,7 +55,9 @@ test('paths outside the workspace are refused, symbolic links included', async (
   assert.match(escaped.text, /outside the workspace/);
   assert.equal((await call('read_file', { path: join(outside, 'secret.txt') })).ok, false);
 
-  await symlink(outside, join(root, 'link'), 'dir');
+  // "junction" counts only on Windows, where a symbolic link needs a privilege and a junction does not:
+  // both are links that realpath follows. Elsewhere this is a plain symbolic link.
+  await symlink(outside, join(root, 'link'), 'junction');
   const linked = await call('read_file', { path: 'link/secret.txt' });
   assert.match(linked.text, /outside the workspace/);
   assert.equal((await call('write_file', { path: 'link/new.txt' }, 'x')).ok, false);

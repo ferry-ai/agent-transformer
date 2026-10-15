@@ -34,8 +34,9 @@ test('the filesystem root, the home folder and its ancestors are refused', async
   await assert.rejects(check(join(project, '..', '..')), /is your home folder/);
 });
 
-test('a link to the home folder is refused too', { skip: process.platform === 'win32' }, async () => {
-  await symlink(home, join(base, 'home-link'), 'dir');
+test('a link to the home folder is refused too', async () => {
+  // A junction on Windows, where a symbolic link needs a privilege; a plain symbolic link elsewhere.
+  await symlink(home, join(base, 'home-link'), 'junction');
   await assert.rejects(check(join(base, 'home-link')), /is your home folder/);
 });
 
