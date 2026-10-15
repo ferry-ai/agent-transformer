@@ -1,6 +1,6 @@
 # Sandbox & protections — verification findings
 
-Branch under test: `origin/claude/brave-volta-gkjfww` (verified from `local/verify-sandbox`).
+Branch under test: `origin/claude/brave-volta-gkjfww` at `ee2e146` (verified from `local/verify-sandbox`). The four later commits of PR #2 (`6864cba`…`aa88105`: danger hints, secret redaction, bypass fixes, README) were not re-run against this corpus.
 Machine: Windows 11 (10.0.26300), Node v24.14.1, git 2.50.1. **No container runtime**
 (`docker`, `podman` both absent; no Docker Desktop; WSL has no distro). Date: 2026-10-15.
 
