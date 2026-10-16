@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, parse } from 'node:path';
 import { after, before, test } from 'node:test';
@@ -11,7 +11,10 @@ let home = '';
 let project = '';
 
 before(async () => {
-  base = await mkdtemp(join(tmpdir(), 'agent-workspace-'));
+  // Its real path: the temp folder can be reached through a link (/var -> /private/var on macOS) or by
+  // its 8.3 short name (C:\Users\RUNNER~1 on the Windows runner). checkWorkspace compares real paths,
+  // and a folder that does not exist yet, like the data dir below, only gets resolve(), not realpath().
+  base = await realpath(await mkdtemp(join(tmpdir(), 'agent-workspace-')));
   home = join(base, 'home');
   project = join(home, 'code', 'project');
   await mkdir(project, { recursive: true });
