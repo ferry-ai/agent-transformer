@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { after, before, test } from 'node:test';
 import { chromium, type Browser } from 'playwright';
+import { deepseek } from '../adapters/deepseek/selectors.js';
+import { loadFixtures } from '../adapters/deepseek/testing/fixtures.js';
 
 // Runs the page script on a local copy of DeepSeek's message structure: no network involved.
 const script = readFileSync(new URL('./last-message.js', import.meta.url), 'utf8');
@@ -123,3 +125,19 @@ test('when the message selector lists several guesses, nested matches are one me
   assert.equal(result.text, 'Answer');
 });
 
+// Replays of captured messages (scripts/deepseek/capture.ts, then sanitize.ts), read
+// with the adapter's own selectors. The expectations were recorded at capture time.
+const captured = loadFixtures().filter((fixture) => fixture.html !== undefined && fixture.expect.page !== undefined);
+if (captured.length === 0) {
+  test('captured messages render as recorded', (t) => {
+    t.skip('no captured fixtures yet: see docs/calibration.md');
+  });
+}
+for (const fixture of captured) {
+  test(`captured message "${fixture.name}" renders as recorded`, async (t) => {
+    const args = JSON.stringify({ message: deepseek.message, markdown: deepseek.markdown });
+    const result = await lastMessage(`<main>${fixture.html ?? ''}</main>`, args);
+    if (!result) return t.skip('no browser available');
+    assert.deepEqual({ text: result.text, thinking: result.thinking }, fixture.expect.page);
+  });
+}

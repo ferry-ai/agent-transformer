@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { endedEarly, parseCompletionStream } from './stream.js';
+import { loadFixtures, streamExpectation } from './testing/fixtures.js';
 
 const data = (payload: unknown): string => `data: ${JSON.stringify(payload)}`;
 const named = (event: string, payload: unknown): string => `event: ${event}\n${data(payload)}`;
@@ -157,3 +158,17 @@ test('error hints are reported, other hints and named events are not', () => {
   assert.equal(reply.content, '');
 });
 
+// Replays of captured replies (scripts/deepseek/capture.ts, then sanitize.ts). The
+// expectations were recorded at capture time: a parser change that alters what any of
+// them reads fails here.
+const captured = loadFixtures().filter((fixture) => fixture.stream !== undefined && fixture.expect.stream !== undefined);
+if (captured.length === 0) {
+  test('captured streams parse as recorded', (t) => {
+    t.skip('no captured fixtures yet: see docs/calibration.md');
+  });
+}
+for (const fixture of captured) {
+  test(`captured stream "${fixture.name}" parses as recorded`, () => {
+    assert.deepEqual(streamExpectation(fixture.stream ?? ''), fixture.expect.stream);
+  });
+}
