@@ -83,6 +83,36 @@ function scan(text: string, options: ParseOptions): { block: ParsedBlock; fence:
   return found;
 }
 
+/** Tags of native function calling (other chat UIs, model special tokens), which this runner does not read. */
+const CALL_TAGS = /<\/?\s*(tool_call|tool_calls|tool_use|function_call|function_calls|invoke)\b|<[|｜]\s*tool[▁_]/i;
+/** The name field of a JSON line that calls a tool. */
+const JSON_CALL = /"(?:tool|name|tool_name)"\s*:\s*"([^"\\]+)"/;
+
+/**
+ * For a reply with no tool block: does it try to call a tool anyway? A JSON call line
+ * outside any fence (or in an untagged or json fence it broke), or a function-calling
+ * tag. Says what it found, or undefined. Prose that only names a tool does not count.
+ */
+export function looksLikeUnfencedCall(text: string, isTool: (name: string) => boolean): string | undefined {
+  const lines = text.split(/\r?\n/);
+  const hidden = new Set<number>();
+  for (const fence of fences(text)) {
+    // Untagged and json blocks stay visible: a call whose tag got lost is still a call.
+    if (MAYBE_INFO.has((fence.info.split(/\s+/)[0] ?? '').toLowerCase())) continue;
+    for (let i = fence.start; i <= fence.end; i += 1) hidden.add(i);
+  }
+  const visible = lines.filter((_, i) => !hidden.has(i));
+  const tag = CALL_TAGS.exec(visible.join('\n'));
+  if (tag) return `a function-calling tag (${tag[0].trim()}…)`;
+  for (const line of visible) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith('{')) continue;
+    const name = JSON_CALL.exec(trimmed)?.[1]?.trim();
+    if (name !== undefined && isTool(name)) return `a JSON line that calls ${name}`;
+  }
+  return undefined;
+}
+
 export interface CallResult {
   index: number;
   tool: string;
