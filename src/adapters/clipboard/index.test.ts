@@ -184,8 +184,49 @@ test('the prompt pasted back is refused: from the clipboard and pasted into the 
     clipboard,
   );
   assert.equal((await adapter.send('Do it')).text, 'Done.');
-  assert.match(out(), /This is a prompt \(it has the agent-transformer prompt markers\), not the reply/);
+  assert.match(out(), /This is a prompt \(it begins with an agent-transformer prompt line\), not the reply/);
   assert.match(out(), /This is the prompt, not the reply\./);
+});
+
+/** A reply that quotes a prompt marker line, as when the agent works on reply.ts itself. */
+const QUOTING =
+  'The comment in reply.ts reads:\n> [[agent-transformer prompt 3 end]]\nThat line closes each prompt, so I will keep it.\n' +
+  '```tool\n{"tool": "list_dir"}\n```';
+
+test('a reply that quotes a prompt marker line arrives whole from the clipboard', async () => {
+  const clipboard = new FakeClipboard();
+  const { adapter, out } = await setup([copyThenEnter(clipboard, `${QUOTING}\n[[end of reply 1]]`)], clipboard);
+  assert.equal((await adapter.send('Look at reply.ts')).text, QUOTING);
+  assert.doesNotMatch(out(), /⚠/);
+});
+
+test('a reply that quotes a prompt marker line arrives whole when pasted', async () => {
+  const clipboard = new FakeClipboard();
+  const { adapter, input, out } = await setup([`${QUOTING}\n[[end of reply 1]]`], clipboard);
+  assert.equal((await adapter.send('Look at reply.ts')).text, QUOTING);
+  assert.doesNotMatch(out(), /⚠/);
+  assert.deepEqual(input.prompts, ['reply 1> ']);
+  assert.equal(clipboard.reads, 0);
+});
+
+test('the rest of a refused paste is dropped, not read as a new paste', async () => {
+  const clipboard = new FakeClipboard();
+  let prompt = '';
+  const { adapter, input, out } = await setup(
+    [
+      // The prompt and the reply under it, pasted together: the paste ends at the prompt's end line.
+      () => {
+        prompt = clipboard.writes[0] ?? '';
+        return `${prompt}\nPartial answer.\n\`\`\`tool\n{"tool": "note"}\n\`\`\`\n[[end of reply 1]]`;
+      },
+      copyThenEnter(clipboard, 'Done.\n[[end of reply 1]]'),
+    ],
+    clipboard,
+  );
+  assert.equal((await adapter.send('Do it')).text, 'Done.');
+  assert.match(out(), /This is the prompt, not the reply\./);
+  assert.match(out(), /Ignored 5 more lines pasted after it\./);
+  assert.deepEqual(input.prompts, ['reply 1> ', 'reply 1> ']);
 });
 
 test('the reply to an older prompt is refused', async () => {

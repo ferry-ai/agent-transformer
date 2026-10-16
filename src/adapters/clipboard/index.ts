@@ -3,7 +3,7 @@ import { AdapterError, type ChatAdapter, type ChatReply, type SendOptions } from
 import { dim, errorMessage, safe, safeLine, yellow } from '../../term.js';
 import type { Clipboard, ClipboardChoice } from './clipboard.js';
 import type { InputEvent, InputSession, UserInput } from './input.js';
-import { checkReply, framePrompt, markerOf, replyEnd, TYPED_END } from './reply.js';
+import { checkReply, framePrompt, markerOf, replyEnd, TYPED_END, type Marker } from './reply.js';
 
 export { systemClipboard, type Clipboard, type ClipboardChoice } from './clipboard.js';
 export { readlineInput, type InputEvent, type InputSession, type UserInput } from './input.js';
@@ -213,16 +213,29 @@ export class ClipboardAdapter implements ChatAdapter {
       }
       candidate = checked.text;
       this.print(yellow(`⚠ ${checked.problem}`));
+      if (from === 'paste') {
+        // The rest of a refused paste is not a new paste: read as one, it would skip the checks.
+        const extra = (await session.drain()).filter((rest) => rest.trim() !== '').length;
+        if (extra > 0) this.print(dim(`Ignored ${extra} more line${extra === 1 ? '' : 's'} pasted after it.`));
+      }
       const again = this.clipboard ? 'Copy the whole reply and press Enter, or paste it here.' : 'Paste the whole reply here.';
       this.print(dim(candidate === undefined ? again : `${again} Or type /accept to pass this one on as it is.`));
     }
   }
 
-  /** A reply pasted into the terminal: its lines up to an end line (or the end line of a prompt pasted by mistake). */
+  /**
+   * A reply pasted into the terminal: its lines up to an end line. A paste that opens with
+   * a prompt's begin line (the prompt pasted by mistake) also ends at that prompt's end
+   * line; elsewhere a prompt marker line is the reply's own text, which may quote one.
+   */
   private async readPaste(session: InputSession, first: string): Promise<string> {
     const lines = [first];
-    let marker = markerOf(first);
-    while (marker?.kind !== 'end' && !(marker?.kind === 'prompt' && marker.edge === 'end')) {
+    const opening = markerOf(first);
+    const promptTurn = opening?.kind === 'prompt' && opening.edge === 'begin' ? opening.turn : undefined;
+    const ends = (marker: Marker | undefined): boolean =>
+      marker?.kind === 'end' || (promptTurn !== undefined && marker?.kind === 'prompt' && marker.edge === 'end' && marker.turn === promptTurn);
+    let marker = opening;
+    while (!ends(marker)) {
       const line = lineOf(await session.next('… '));
       lines.push(line);
       marker = markerOf(line);

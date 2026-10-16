@@ -94,14 +94,15 @@ export function checkReply(raw: string, turn: number, prompt: string, from: 'cli
     };
   }
   const lines = text.split('\n');
-  const markers = lines.map(markerOf);
-  if (markers.some((marker) => marker?.kind === 'prompt')) {
-    return {
-      ok: false,
-      problem: 'This is a prompt (it has the agent-transformer prompt markers), not the reply.',
-      text: text.trim(),
-    };
+  const copied = promptCopied(lines);
+  if (copied) {
+    const rest = copied.end < 0 ? '' : lines.slice(copied.end + 1).join('\n').trim();
+    return rest === ''
+      ? { ok: false, problem: 'This is a prompt (it begins with an agent-transformer prompt line), not the reply.', text: text.trim() }
+      : { ok: false, problem: 'This holds a prompt as well as the reply: copy only the reply.', text: rest };
   }
+  // Prompt marker lines further down are the reply's own text: a reply may quote them.
+  const markers = lines.map(markerOf);
 
   let last = -1;
   markers.forEach((marker, i) => {
@@ -132,6 +133,23 @@ export function checkReply(raw: string, turn: number, prompt: string, from: 'cli
   return after > 0
     ? { ok: true, text: reply, note: `Left out ${after} line${after === 1 ? '' : 's'} after the end line.` }
     : { ok: true, text: reply };
+}
+
+/**
+ * A prompt copied back: the text opens with a prompt's begin line. `end` is the line of
+ * that prompt's end line, or -1 when there is none. Only the opening line counts, so a
+ * reply that quotes or edits a marker line (this file, say) is not taken for a prompt.
+ */
+export function promptCopied(lines: string[]): { turn: number; end: number } | undefined {
+  const first = lines.findIndex((line) => line.trim() !== '');
+  const begin = first < 0 ? undefined : markerOf(lines[first] ?? '');
+  if (begin?.kind !== 'prompt' || begin.edge !== 'begin') return undefined;
+  const end = lines.findIndex((line, i) => {
+    if (i <= first) return false;
+    const marker = markerOf(line);
+    return marker?.kind === 'prompt' && marker.edge === 'end' && marker.turn === begin.turn;
+  });
+  return { turn: begin.turn, end };
 }
 
 /** Info strings of tool blocks, as in agent/protocol.ts. */

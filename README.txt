@@ -91,7 +91,7 @@ Each prompt asks the model to end its reply with the line `[[end of reply N]]`.
 Before a reply reaches the agent it is checked, and you are asked again when:
 
 - the clipboard still holds the prompt (Enter pressed before copying the reply), or
-  the text has the prompt markers (your own message copied by mistake);
+  the text begins with a prompt's begin line (your own message copied by mistake);
 - the end line is missing or a code block is left open: the reply was cut off, still
   being written, or copied only in part;
 - the end line has another number: it is the reply to an older prompt.

@@ -55,8 +55,34 @@ test('a prompt copied back from the chat is recognised by its markers', () => {
   const checked = checkReply(copied, 2, prompt);
   assert.equal(checked.ok, false);
   assert.match(!checked.ok ? checked.problem : '', /This is a prompt/);
-  // An older prompt too.
+  // An older prompt too, and a prompt cut off before its end line.
   assert.equal(checkReply(framePrompt('Older', 1), 2, prompt).ok, false);
+  const cut = checkReply(prompt.split('\n').slice(0, 2).join('\n'), 2, prompt);
+  assert.equal(cut.ok, false);
+  assert.match(!cut.ok ? cut.problem : '', /This is a prompt/);
+});
+
+test('a prompt copied together with its reply is refused; /accept would take the reply part', () => {
+  const checked = checkReply(`${prompt}\n\nDone.\n[[end of reply 2]]`, 2, prompt);
+  assert.equal(checked.ok, false);
+  assert.match(!checked.ok ? checked.problem : '', /holds a prompt as well as the reply/);
+  assert.equal(!checked.ok ? checked.text : undefined, 'Done.\n[[end of reply 2]]');
+});
+
+test('a reply may quote or edit prompt marker lines', () => {
+  const quoting = 'The comment reads:\n> [[agent-transformer prompt 3 end]]\nSo I keep it.';
+  assert.deepEqual(checkReply(`${quoting}\n[[end of reply 2]]`, 2, prompt), { ok: true, text: quoting });
+  // A write_file of reply.ts: its doc comment has whole marker lines.
+  const edit = [
+    '```tool',
+    '{"tool": "write_file", "args": {"path": "src/adapters/clipboard/reply.ts", "content": "/**',
+    ' *   [[agent-transformer prompt 3 begin]]',
+    ' *   ...the message...',
+    ' *   [[agent-transformer prompt 3 end]]',
+    ' */"}}',
+    '```',
+  ].join('\n');
+  assert.deepEqual(checkReply(`Updating it.\n${edit}\n[[end of reply 2]]`, 2, prompt), { ok: true, text: `Updating it.\n${edit}` });
 });
 
 test('a reply cut off is refused, and /accept may still take it', () => {
