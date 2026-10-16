@@ -55,7 +55,9 @@ test('paths outside the workspace are refused, symbolic links included', async (
   assert.match(escaped.text, /outside the workspace/);
   assert.equal((await call('read_file', { path: join(outside, 'secret.txt') })).ok, false);
 
-  await symlink(outside, join(root, 'link'), 'dir');
+  // "junction" counts only on Windows, where a symbolic link needs a privilege and a junction does not:
+  // both are links that realpath follows. Elsewhere this is a plain symbolic link.
+  await symlink(outside, join(root, 'link'), 'junction');
   const linked = await call('read_file', { path: 'link/secret.txt' });
   assert.match(linked.text, /outside the workspace/);
   assert.equal((await call('write_file', { path: 'link/new.txt' }, 'x')).ok, false);
@@ -113,10 +115,12 @@ test('run_command asks first, then reports output and exit code', async () => {
   assert.match(result.text, /^\[exit code 3\]/);
   assert.match(result.text, /out/);
   assert.match(result.text, /err/);
-  assert.deepEqual(await call('run_command', { command: 'node -e "process.stdout.write(process.cwd())"' }), {
-    ok: true,
-    text: `[exit code 0]\n${await realpath(root)}`,
-  });
+  const cwd = await call('run_command', { command: 'node -e "process.stdout.write(process.cwd())"' });
+  assert.equal(cwd.ok, true);
+  assert.match(cwd.text, /^\[exit code 0\]\n/);
+  // Compared by real path: the child prints the folder the way it was started in it, by its 8.3 short
+  // name on the Windows runner (C:\Users\RUNNER~1\...), while getcwd() gives the real path on POSIX.
+  assert.equal(await realpath(cwd.text.replace(/^\[exit code 0\]\n/, '')), await realpath(root));
 });
 
 test('a denied command does not run and the note reaches the model', async () => {
@@ -148,10 +152,12 @@ test('commands get a clean environment: no tokens unless passed with --pass-env'
     assert.equal(plain.AGENT_TEST_TOKEN, undefined);
     assert.equal(plain.LC_TIME, 'C');
     assert.ok(plain.PATH);
-    const allowed = Object.keys(plain).filter((name) => !/^(LANG|LANGUAGE|LC_\w+|TZ)$/.test(name));
-    for (const name of allowed) {
-      assert.ok(['HOME', 'LOGNAME', 'PATH', 'SHELL', 'TERM', 'USER', 'PWD', 'SHLVL', '_', 'OLDPWD'].includes(name) || process.platform === 'win32', name);
-    }
+    const allowed = ['HOME', 'LOGNAME', 'PATH', 'SHELL', 'TERM', 'USER', 'PWD', 'SHLVL', '_', 'OLDPWD'];
+    // macOS sets __CF_USER_TEXT_ENCODING (the user's text encoding) in every process that loads
+    // CoreFoundation, node included: the command gets it without inheriting it, and it is no secret.
+    if (process.platform === 'darwin') allowed.push('__CF_USER_TEXT_ENCODING');
+    const others = Object.keys(plain).filter((name) => !/^(LANG|LANGUAGE|LC_\w+|TZ)$/.test(name) && !allowed.includes(name));
+    if (process.platform !== 'win32') assert.deepEqual(others, []);
 
     const passing = new Toolbox(nativeTools({ root, passEnv: ['AGENT_TEST_TOKEN'] }), { approve: async () => ({ approved: true }) });
     const passed = await passing.call({ index: 1, tool: 'run_command', args: { command: printEnv } });

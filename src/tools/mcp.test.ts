@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
@@ -19,6 +19,8 @@ async function inMemory(config: Partial<McpServerConfig> = {}, server: { echoDes
 
 test('config: the mcpServers shape, disabled servers, env expansion', () => {
   process.env.AGENT_TEST_TOKEN = 'secret';
+  // The folder of the config file, absolute as loadMcpConfig passes it: "/base" alone has no drive on Windows.
+  const base = resolve('/base');
   const configs = parseMcpConfig(
     {
       mcpServers: {
@@ -27,7 +29,7 @@ test('config: the mcpServers shape, disabled servers, env expansion', () => {
         off: { command: 'x', disabled: true },
       },
     },
-    '/base',
+    base,
   );
   assert.deepEqual(configs, [
     {
@@ -35,7 +37,7 @@ test('config: the mcpServers shape, disabled servers, env expansion', () => {
       command: 'npx',
       args: ['-y', 'server'],
       env: { TOKEN: 'secret' },
-      cwd: join('/base', 'sub'),
+      cwd: join(base, 'sub'),
       autoApprove: ['read'],
     },
     { name: 'web', url: 'https://example.com/mcp', type: 'http', autoApprove: true, timeoutMs: 5000 },
