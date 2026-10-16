@@ -115,6 +115,27 @@ test('an unreadable reply is asked again, not the same message', async () => {
   assert.equal(adapter.sent[1]?.message, REPEAT_REQUEST);
 });
 
+test('a blank reply is asked again, not taken for the final answer', async () => {
+  // Spike: a blank reply had no tool block, so it ended the task as done, with an empty answer.
+  const { adapter, agent, events } = await setup([' \n', 'Done.']);
+  const result = await agent.run('task');
+  assert.equal(result.status, 'done');
+  assert.equal(result.answer, 'Done.');
+  assert.equal(result.iterations, 1);
+  assert.equal(adapter.sent[1]?.message, REPEAT_REQUEST);
+  const retries = events.flatMap((event) => (event.type === 'retry' ? [event.error.kind] : []));
+  assert.deepEqual(retries, ['empty']);
+});
+
+test('blank replies that go on fail the task; a blank filtered reply still ends filtered', async () => {
+  const { agent } = await setup(['', ' ', '\n'], { retry: { attempts: 2, baseDelayMs: 1, maxDelayMs: 1 } });
+  const result = await agent.run('task');
+  assert.equal(result.status, 'failed');
+  assert.ok(result.error instanceof AdapterError && result.error.kind === 'empty');
+  const filtered = await setup([{ text: '', filtered: true }]);
+  assert.equal((await filtered.agent.run('task')).status, 'filtered');
+});
+
 test('errors that need the user are not retried', async () => {
   for (const kind of ['limit', 'send_failed', 'closed', 'timeout', 'provider'] as const) {
     const { adapter, agent } = await setup([new AdapterError(kind, kind), 'never']);

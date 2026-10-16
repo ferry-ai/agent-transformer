@@ -430,6 +430,9 @@ export class Agent {
       this.emit({ type: 'waiting', iteration });
       try {
         const reply = await adapter.send(sent.text, sent.attachments.length > 0 ? { attachments: sent.attachments } : undefined);
+        // A blank reply is no answer, yet it has no tool block: it would end the task as if it
+        // were done. It is handled as an unreadable reply: the model is asked to send it again.
+        if (reply.text.trim() === '' && reply.filtered !== true) throw new AdapterError('empty', 'The reply was blank.');
         this.chat.used += sent.text.length + sent.attachedChars + reply.text.length;
         this.chat.exchanges += 1;
         await transcript?.turn({
