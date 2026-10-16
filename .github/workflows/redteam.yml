@@ -1,0 +1,121 @@
+name: Red team
+
+# The red-team corpus (redteam/) as automated checks: the host-level scenarios through
+# the real CLI on Linux, Windows and macOS; on Linux, the sandbox image built from
+# sandbox/Dockerfile, the real-container test against it, and the container scenarios
+# in that sandbox. Every push, on any branch, and every pull request; or by hand. As
+# with ci.yml, a push to a branch with an open pull request runs the jobs twice: once
+# for the branch, once for its merge with the base.
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer commit on the same pull request (or branch) cancels the run it supersedes.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  host:
+    name: host scenarios (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+
+      - name: Typecheck the red-team runners
+        run: npx tsc --noEmit -p redteam/tsconfig.json
+
+      # Each scenario through the real CLI with --replay, unattended: no terminal, so
+      # every approval is denied. Judged on effects only (see redteam/run.test.ts).
+      - name: Host-level scenarios
+        run: npx tsx --test --test-reporter=spec redteam/run.test.ts
+
+  container:
+    name: sandbox image and container scenarios (ubuntu-latest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+
+      - name: Build the sandbox image
+        id: build
+        run: docker build --progress=plain --tag agent-sandbox:local sandbox 2>&1 | tee "$RUNNER_TEMP/build.log"
+
+      # The digest the build resolved the FROM tag to, as BuildKit prints it.
+      - name: Report the base image
+        run: |
+          base=$(grep -oE 'FROM [^ ]+@sha256:[0-9a-f]{64}' "$RUNNER_TEMP/build.log" | head -n 1 | cut -d ' ' -f 2)
+          tools=$(docker run --rm --network none agent-sandbox:local sh -c 'node --version; git --version; python3 --version; setsid --version' | paste -sd ';' -)
+          echo "base image: ${base:-not found in the build log}"
+          echo "image id:   $(docker image inspect --format '{{.Id}}' agent-sandbox:local)"
+          echo "tools:      $tools"
+          {
+            echo "### Sandbox image"
+            echo "- base: \`${base:-not found in the build log}\`"
+            echo "- image id: \`$(docker image inspect --format '{{.Id}}' agent-sandbox:local)\`"
+            echo "- tools: $tools"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # The real-container test of src/tools/sandbox.test.ts, against this image. It skips
+      # itself when no runtime or image is found, so the next step reads the TAP report and
+      # fails unless that test ran.
+      - name: Real-container test with the sandbox image
+        env:
+          AGENT_SANDBOX_TEST_IMAGE: agent-sandbox:local
+        run: >-
+          npx tsx --test
+          --test-reporter=spec --test-reporter-destination=stdout
+          --test-reporter=tap --test-reporter-destination="$RUNNER_TEMP/sandbox.tap"
+          src/tools/sandbox.test.ts
+
+      - name: Check that the real-container test ran
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
+          line=$(grep -E '^(not )?ok [0-9]+ - a real container' "$RUNNER_TEMP/sandbox.tap" || true)
+          echo "TAP: ${line:-<missing>}"
+          case "$line" in
+            '') echo "::error::The real-container test is not in the report."; exit 1 ;;
+            *'# SKIP'*) echo "::error::The real-container test was skipped."; exit 1 ;;
+            'not ok'*) echo "::error::The real-container test failed."; exit 1 ;;
+          esac
+          echo "### Real-container test" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`$line\`" >> "$GITHUB_STEP_SUMMARY"
+
+      # The four container-*.json scenarios in the sandbox, network off. The harness
+      # approves only their scripted commands; it fails instead of skipping here.
+      - name: Container scenarios
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        env:
+          AGENT_SANDBOX_TEST_IMAGE: agent-sandbox:local
+          REDTEAM_REQUIRE_CONTAINER: '1'
+        run: npx tsx --test --test-reporter=spec redteam/container.test.ts
