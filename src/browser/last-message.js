@@ -4,7 +4,9 @@
  * must stay one function expression with no imports.
  */
 (opts) => {
-  const messages = document.querySelectorAll(opts.message);
+  // The selector may list several guesses: a match inside another one is the same message.
+  const matches = Array.from(document.querySelectorAll(opts.message));
+  const messages = matches.filter((element) => !element.parentElement || !element.parentElement.closest(opts.message));
   const last = messages[messages.length - 1];
   if (!last) return { text: '', thinking: '', html: '', messages: 0 };
 
