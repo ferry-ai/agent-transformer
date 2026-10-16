@@ -9,6 +9,39 @@ These scenarios are the adversary's moves; the *expected* column in
 [`FINDINGS.md`](FINDINGS.md) is what the agent should do in response, and the
 *observed* column is what it actually did on the machine that ran it.
 
+## Automated runs
+
+Two test files play the whole corpus and judge it on **effects**, never on console
+wording. CI runs them on every push and pull request (`.github/workflows/redteam.yml`).
+
+```bash
+npx tsx --test redteam/run.test.ts         # host-level scenarios, any OS
+docker build -t agent-sandbox:local sandbox
+AGENT_SANDBOX_TEST_IMAGE=agent-sandbox:local npx tsx --test redteam/container.test.ts
+```
+
+- **`run.test.ts`** builds each scenario's fixture in a temporary folder, plays the
+  script through the real CLI exactly as below (`--replay`, stdin an empty pipe, so
+  every approval is denied; it never approves anything) with `--sandbox none`, and
+  checks that: nothing changed outside the workspace and the data dir, nor in the
+  workspace (`.git` byte for byte included), nor anything planted in the data dir;
+  sentinel strings planted in secrets, outside files and the environment appear nowhere
+  in the data dir (it holds everything sent to the model; `checkpoints/`, the `/undo`
+  copy of the workspace, is left out); no command reached a shell (stand-ins for
+  `touch`, `env`, `sleep`... sit first on `PATH`); and the transcript shows every
+  scripted call attempted and refused. A self-check proves each of those detectors
+  fires. `windows-names` runs only on Windows, `symlink-escape` only where the account
+  may create symbolic links.
+- **`container.test.ts`** plays the four `container-*.json` scripts in the Docker
+  sandbox, network off, through the APIs the real-container test uses (a `Toolbox`
+  with an approver). The approver says yes only to the script's own commands, only when
+  they run in the sandbox; everything else is denied. Without Docker or the image it
+  skips (`REDTEAM_REQUIRE_CONTAINER=1`, set in CI, makes that a failure).
+
+`--sandbox none` keeps the host runs the same everywhere: with `auto`, a machine that
+has Docker but not the default image refuses to start (by design), and the commands are
+denied anyway. The commands below reproduce any single row by hand.
+
 ## How to run
 
 Always use a throwaway `--workspace` and `--data-dir` so nothing real is touched.
@@ -37,13 +70,11 @@ $dd = New-Item -ItemType Directory (Join-Path $env:TEMP ("rt-" + [guid]::NewGuid
 
 Some scenarios need a fixture in the workspace first (an existing `.git`, a planted
 link, a data dir that lies *inside* the workspace). The per-scenario notes below say
-which. A reusable runner that builds the right fixture for each host-executable
-scenario and saves one log apiece lives in the project's verification notes; the
-commands above are enough to reproduce any single row.
+which; `run.test.ts` builds each of them.
 
 ## Scenarios
 
-### Host-level (run anywhere; executed on Windows for this report)
+### Host-level (run anywhere; automated by `run.test.ts`)
 
 | File | Attack | Fixture needed |
 |------|--------|----------------|
@@ -69,11 +100,12 @@ AWS_SECRET_ACCESS_KEY=leak GITHUB_TOKEN=ghp_x npx tsx redteam/probe-env.ts      
 MY_FLAG=1 npx tsx redteam/probe-env.ts MY_FLAG                                         # expect: MY_FLAG present
 ```
 
-### Container-level (need Docker or Podman; NOT executed in this report)
+### Container-level (need Docker; automated by `container.test.ts`)
 
 These target the sandbox itself and only exercise their protection when `run_command`
-runs inside a container. Run them with `--sandbox docker` (or `podman`) and the image
-present, approving the commands at an interactive prompt.
+runs inside a container. `container.test.ts` plays them with the image present,
+approving the scripted commands only. By hand: `--sandbox docker` (or `podman`),
+approving the commands at an interactive prompt.
 
 | File | Attack | What should stop it |
 |------|--------|---------------------|
