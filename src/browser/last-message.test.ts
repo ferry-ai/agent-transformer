@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { after, before, test } from 'node:test';
 import { chromium, type Browser } from 'playwright';
+import { deepseek } from '../adapters/deepseek/selectors.js';
+import { loadFixtures } from '../adapters/deepseek/testing/fixtures.js';
 
 // Runs the page script on a local copy of DeepSeek's message structure: no network involved.
 const script = readFileSync(new URL('./last-message.js', import.meta.url), 'utf8');
@@ -31,12 +33,13 @@ after(async () => {
   await browser?.close();
 });
 
-async function lastMessage(html: string): Promise<PageMessage | undefined> {
+async function lastMessage(html: string, options: string = selectors): Promise<PageMessage | undefined> {
   if (!browser) return undefined;
   const page = await browser.newPage();
   try {
+    await page.route('**/*', (route) => route.abort());
     await page.setContent(html);
-    return (await page.evaluate(`(${script})(${selectors})`)) as PageMessage;
+    return (await page.evaluate(`(${script})(${options})`)) as PageMessage;
   } finally {
     await page.close();
   }
@@ -110,3 +113,31 @@ test('an empty page yields no message', async (t) => {
   assert.equal(result.messages, 0);
   assert.equal(result.text, '');
 });
+
+test('when the message selector lists several guesses, nested matches are one message', async (t) => {
+  const both = JSON.stringify({ message: '[data-message-id], .ds-message', markdown: '.ds-markdown' });
+  const html =
+    '<div class="ds-message"><div data-message-id="1">Question</div></div>' +
+    '<div class="ds-message"><div data-message-id="2"><div class="ds-markdown"><p>Answer</p></div></div></div>';
+  const result = await lastMessage(html, both);
+  if (!result) return t.skip('no browser available');
+  assert.equal(result.messages, 2);
+  assert.equal(result.text, 'Answer');
+});
+
+// Replays of captured messages (scripts/deepseek/capture.ts, then sanitize.ts), read
+// with the adapter's own selectors. The expectations were recorded at capture time.
+const captured = loadFixtures().filter((fixture) => fixture.html !== undefined && fixture.expect.page !== undefined);
+if (captured.length === 0) {
+  test('captured messages render as recorded', (t) => {
+    t.skip('no captured fixtures yet: see docs/calibration.md');
+  });
+}
+for (const fixture of captured) {
+  test(`captured message "${fixture.name}" renders as recorded`, async (t) => {
+    const args = JSON.stringify({ message: deepseek.message, markdown: deepseek.markdown });
+    const result = await lastMessage(`<main>${fixture.html ?? ''}</main>`, args);
+    if (!result) return t.skip('no browser available');
+    assert.deepEqual({ text: result.text, thinking: result.thinking }, fixture.expect.page);
+  });
+}

@@ -1,0 +1,146 @@
+import assert from 'node:assert/strict';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { basename, join, sep } from 'node:path';
+import { test } from 'node:test';
+import { FIXTURES_DIR, fixtureFiles, mockFixtures, sameFolder, streamExpectation, strayFixtureFiles } from './testing/fixtures.js';
+import { checkText, IdMap, sanitizeHtml, sanitizeStream, scrubText } from './testing/sanitize.js';
+
+// The sanitizer stands between a logged-in session and a public repository: these
+// tests use made-up ids and tokens shaped like real ones.
+
+const SESSION = '3f2b9c1e-8d7a-4e6f-9b0c-1a2b3c4d5e6f';
+const TOKEN = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.c2lnbmF0dXJlLXZhbHVl';
+
+test('stream ids, times, tokens and emails become placeholders; the reply stays readable', () => {
+  const raw = [
+    'event: ready',
+    'data: {"request_message_id":7,"response_message_id":8}',
+    '',
+    `data: {"v":{"response":{"message_id":8,"parent_id":7,"chat_session_id":"${SESSION}","inserted_at":1760000000.5,"status":"WIP","fragments":[{"id":1,"type":"RESPONSE","content":"Hi"}],"files":[{"id":"file-abc123","file_name":"sample-notes.txt"}]}}}`,
+    '',
+    `data: {"v":" there, write to someone@mail.test or use ${TOKEN}"}`,
+    '',
+    'data: {"p":"response/status","o":"SET","v":"FINISHED"}',
+    '',
+    'event: update_session',
+    'data: {"updated_at":1760000001.25,"email":"someone@mail.test"}',
+    '',
+  ].join('\n');
+  const ids = new IdMap();
+  const clean = sanitizeStream(raw, ids);
+  assert.doesNotMatch(clean, /3f2b9c1e|file-abc123|1760000000|mail\.test|eyJhbGci/);
+  assert.match(clean, /"response_message_id":1002/);
+  assert.match(clean, /"message_id":1002,"parent_id":1001/);
+  assert.match(clean, /"chat_session_id":"id-1"/);
+  assert.match(clean, /"inserted_at":0/);
+  assert.match(clean, /"id":"id-2","file_name":"sample-notes.txt"/);
+  assert.deepEqual(checkText('stream.sse', clean), []);
+  const parsed = streamExpectation(clean);
+  assert.equal(parsed.content, 'Hi there, write to user@example.com or use <redacted-token>');
+  assert.equal(parsed.status, 'FINISHED');
+});
+
+test('the same id gets the same placeholder in the stream and in the HTML', () => {
+  const ids = new IdMap();
+  sanitizeStream('data: {"v":{"response":{"message_id":42}}}\n\n', ids);
+  const html = sanitizeHtml(
+    '<div data-message-id="42" class="ds-message"><a href="/a/chat/s/abcDEF123">x</a><img src="data:image/png;base64,AAAA"><div class="ds-markdown"><p>C:\\Users\\someone\\notes.txt</p></div></div>',
+    ids,
+  );
+  assert.match(html, /data-message-id="1001"/);
+  assert.match(html, /\/a\/chat\/s\/id-1"/);
+  assert.match(html, /src=""/);
+  assert.match(html, /<user-folder>/);
+  assert.deepEqual(checkText('message.html', html), []);
+});
+
+test('a refused request body (plain JSON) is sanitized too', () => {
+  const clean = sanitizeStream(`{"code":40003,"msg":"Authorization Failed","data":{"user_id":"u-998877","token":"${TOKEN}"}}`, new IdMap());
+  assert.doesNotMatch(clean, /u-998877|eyJhbGci/);
+  assert.deepEqual(checkText('refused.sse', clean), []);
+});
+
+test('checkText finds what must never be committed', () => {
+  const rules = (text: string, deny: string[] = []): string[] => checkText('x', text, deny).map((finding) => finding.rule);
+  assert.deepEqual(rules('Cookie: ds_session_id=abc'), ['header']);
+  assert.deepEqual(rules('{"authorization": "Bearer abcdefghijkl"}'), ['header', 'bearer token']);
+  assert.deepEqual(rules(`token ${TOKEN}`), ['jwt']);
+  assert.deepEqual(rules('mail me at someone@mail.test'), ['email']);
+  assert.deepEqual(rules('mail me at user@example.com'), []);
+  assert.deepEqual(rules(`session ${SESSION}`), ['uuid']);
+  assert.deepEqual(rules('C:\\Users\\someone\\x'), ['user folder']);
+  assert.deepEqual(rules('{"message_id": 77}'), ['numeric id']);
+  assert.deepEqual(rules('{"message_id": 1001}'), []);
+  assert.deepEqual(rules('{"chat_session_id": "abc"}'), ['string id']);
+  assert.deepEqual(rules('<div data-message-id="77">'), ['id attribute']);
+  assert.deepEqual(rules('<a href="/a/chat/s/abcDEF">'), ['chat link']);
+  assert.deepEqual(rules('{"email": "x"}'), ['personal field']);
+  assert.deepEqual(rules('Hello Somebody', ['somebody']), ['denied word']);
+  // The excerpt never prints a whole secret back.
+  const [finding] = checkText('x', `prefix ${TOKEN} suffix`);
+  assert.ok(finding && !finding.excerpt.includes(TOKEN));
+});
+
+test('lowercase user folders, cookie pairs, phone numbers and every id key are caught and scrubbed', () => {
+  const rules = (text: string): string[] => checkText('x', text).map((finding) => finding.rule);
+  const leaks: Array<[string, string]> = [
+    [String.raw`c:\users\someone\notes.txt`, 'user folder'],
+    ['file:///c:/users/someone/x', 'user folder'],
+    ['ds_session_id=AbCdEf1234567890; HWWAFSESID=abc123def456', 'cookie'],
+    ['GET /?auth_token=abcdef123456 HTTP/1.1', 'cookie'],
+    ['token=abcdef123456', 'cookie'],
+    ['sent with Cookie: a=b', 'header'],
+    ['{"mobile_number": "3331234567"}', 'personal field'],
+    ['{"mobile_number": 3331234567}', 'personal field'],
+    ['{"chat_session_id": 4455}', 'numeric id'],
+    ['{"request_id": 4455}', 'numeric id'],
+    ['{"message_id": "4455"}', 'string id'],
+    ['{"file_ids": [1001, 4455]}', 'id list'],
+    ['{"ref_file_ids": ["file-abc"]}', 'id list'],
+  ];
+  for (const [text, rule] of leaks) assert.ok(rules(text).includes(rule), `${text}: expected "${rule}", got ${JSON.stringify(rules(text))}`);
+
+  const ids = new IdMap();
+  const free = scrubText('c:\\users\\someone\\notes.txt, file:///c:/users/someone/x, ds_session_id=AbCdEf1234567890; HWWAFSESID=abc123def456, Cookie: a=b', ids);
+  assert.doesNotMatch(free, /someone|AbCdEf|abc123|a=b/);
+  assert.deepEqual(checkText('free.txt', free), []);
+  const stream = sanitizeStream(
+    'data: {"mobile_number":3331234567,"phone":"3331234567","chat_session_id":4455,"request_id":"r-1","file_ids":[77,"f-9"]}\n\n',
+    ids,
+  );
+  assert.doesNotMatch(stream, /3331234567|4455|r-1|77|f-9/);
+  assert.deepEqual(checkText('stream.sse', stream), []);
+  // Placeholders and ordinary text stay as they are.
+  assert.deepEqual(rules('{"file_ids": [1001, "id-2"]}'), []);
+  assert.deepEqual(rules('the session lasted a while; token=short'), []);
+});
+
+test('committed fixtures carry nothing private and no stray files', () => {
+  const findings = fixtureFiles().flatMap((file) => checkText(basename(file), readFileSync(file, 'utf8')));
+  assert.deepEqual(findings, []);
+  assert.deepEqual(strayFixtureFiles(), []);
+  // A fixture from a --mock session would replay as a capture of DeepSeek.
+  assert.deepEqual(mockFixtures(), []);
+});
+
+test('the fixtures folder is recognised however --out spells it', () => {
+  const bare = FIXTURES_DIR.replace(/[\\/]+$/, '');
+  assert.ok(sameFolder(bare, FIXTURES_DIR));
+  assert.ok(sameFolder(`${bare}/`, FIXTURES_DIR));
+  assert.ok(sameFolder(`${bare}${sep}${sep}`, FIXTURES_DIR));
+  assert.ok(sameFolder(join(FIXTURES_DIR, 'sub', '..'), FIXTURES_DIR));
+  if (process.platform === 'win32' || process.platform === 'darwin') assert.ok(sameFolder(FIXTURES_DIR.toUpperCase(), FIXTURES_DIR));
+  assert.ok(!sameFolder(join(FIXTURES_DIR, '..'), FIXTURES_DIR));
+});
+
+test('a fixture written from a --mock session is told apart from a capture', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'agent-fixtures-'));
+  try {
+    writeFileSync(join(dir, 'short.json'), JSON.stringify({ origin: 'MOCK, not a calibration: capture.ts --mock' }));
+    writeFileSync(join(dir, 'code.json'), JSON.stringify({ origin: 'captured 2026-10-16 from chat.deepseek.com' }));
+    assert.deepEqual(mockFixtures(dir), ['short']);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

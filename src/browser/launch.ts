@@ -8,6 +8,11 @@ export interface LaunchOptions {
   browser: BrowserChoice;
   /** Persistent profile: the user logs in once by hand and the session is kept. */
   profileDir: string;
+  /**
+   * Only for local test pages (the DeepSeek adapter refuses it on the real site): DeepSeek
+   * is always driven in a visible window the user can take over.
+   */
+  headless?: boolean;
 }
 
 export interface LaunchedBrowser {
@@ -30,11 +35,18 @@ export async function launchBrowser(options: LaunchOptions): Promise<LaunchedBro
     try {
       const context = await chromium.launchPersistentContext(options.profileDir, {
         channel: browser === 'chromium' ? undefined : browser,
-        headless: false,
+        headless: options.headless === true,
         viewport: null,
       });
       return { context, browser };
     } catch (error) {
+      // Another browser has the profile open: the next browser on the same profile cannot help.
+      if (PROFILE_IN_USE.test(error instanceof Error ? error.message : String(error))) {
+        throw new Error(
+          `The browser profile ${options.profileDir} is already open in another browser window. ` +
+            'Close that window (only one browser can use a profile at a time) and try again.',
+        );
+      }
       failures.push(`${browser}: ${firstLine(error)}`);
     }
   }
@@ -44,6 +56,14 @@ export async function launchBrowser(options: LaunchOptions): Promise<LaunchedBro
       'Otherwise install Chrome or Edge, or run "npx playwright install chromium".',
   );
 }
+
+/**
+ * What Chromium says when another process holds the profile (ProcessSingleton and
+ * SingletonLock on Linux and macOS). On Windows a second Chrome hands the profile over
+ * to the first one and exits, which Playwright reports as a closed browser: that case
+ * ends in the generic message above, which names it too.
+ */
+const PROFILE_IN_USE = /ProcessSingleton|SingletonLock|(?:profile|user data) directory is already in use/i;
 
 function firstLine(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);

@@ -1,0 +1,5 @@
+{
+  "//": "Typechecks the calibration scripts (npx tsc -p scripts/deepseek); the root tsconfig covers src only.",
+  "extends": "../../tsconfig.json",
+  "include": ["./*.ts"]
+}
