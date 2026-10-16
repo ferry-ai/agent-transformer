@@ -12,8 +12,9 @@
  * browser profile, opened by the adapter as the CLI opens it; the run never waits for
  * a login or a verification, and stops at the first error from the provider.
  */
+import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { tmpdir, userInfo } from 'node:os';
 import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { DeepSeekWebAdapter } from '../../src/adapters/deepseek/index.js';
@@ -43,6 +44,9 @@ const USAGE = `Usage: npx tsx scripts/spike/run.ts [options]
   --browser <name>      chrome | msedge | chromium (deepseek; default: the first one found)
   --data-dir <path>     deepseek: the data dir whose profiles/deepseek is used (default: the real one)
   --sandbox <mode>      auto (default, as in the CLI) | none | docker | podman
+  --pause <sec>         wait between two tasks (default 0)
+  --workspace-base <d>  where the workspace folder is made (default: the run folder; live, a
+                        folder whose path does not carry your user name, since the model sees it)
   --out <file>          the per-cycle JSONL (default: spike.jsonl in the run folder)
   --keep-going          do not stop at the first task that ends on a provider error`;
 
@@ -61,6 +65,8 @@ async function main(): Promise<void> {
       'data-dir': { type: 'string' },
       sandbox: { type: 'string', default: 'auto' },
       out: { type: 'string' },
+      pause: { type: 'string', default: '0' },
+      'workspace-base': { type: 'string' },
       'keep-going': { type: 'boolean', default: false },
       help: { type: 'boolean', short: 'h', default: false },
     },
@@ -74,13 +80,18 @@ async function main(): Promise<void> {
   const sandbox = (['auto', 'none', 'docker', 'podman'] as const).find((choice) => choice === values.sandbox);
   if (sandbox === undefined) throw new Error('--sandbox must be auto, none, docker or podman.');
 
+  const pauseSec = Number(values.pause);
+  if (!Number.isFinite(pauseSec) || pauseSec < 0) throw new Error('--pause must be a number of seconds.');
+
   const run = await mkdtemp(join(tmpdir(), 'agent-spike-'));
-  const workspace = join(run, 'workspace');
+  const base = values['workspace-base'] ?? (kind === 'deepseek' ? neutralBase() : undefined);
+  const workspace = base === undefined ? join(run, 'workspace') : await mkdtemp(join(resolve(base), 'agent-spike-workspace-'));
   const dataDir = join(run, 'data');
-  await mkdir(workspace);
+  if (base === undefined) await mkdir(workspace);
   await mkdir(dataDir, { mode: 0o700 });
   const out = resolve(values.out ?? join(run, 'spike.jsonl'));
   console.log(`Run folder: ${run}`);
+  if (base !== undefined) console.log(`Workspace folder (its path is shown to the model): ${workspace}`);
 
   let adapter: ChatAdapter;
   let site: MockSite | undefined;
@@ -149,6 +160,7 @@ async function main(): Promise<void> {
       maxMinutes: whole(values['max-minutes'], '--max-minutes'),
       sandbox: sandbox as SandboxChoice,
       stopOnError: values['keep-going'] !== true,
+      pauseSec,
       label: kind === 'fake' ? `fake${values.faults ? ` (faults ${values.faults})` : ''}` : kind,
       ...(values.budget === undefined ? {} : { context: { budgetChars: whole(values.budget, '--budget') } }),
       ...(fastRetries ? { sleep: async () => undefined } : {}),
@@ -161,6 +173,22 @@ async function main(): Promise<void> {
     await adapter.close();
     await site?.close();
   }
+}
+
+/**
+ * A folder for the live workspace whose path does not carry the user's name: the
+ * instructions show the workspace path to the model, and it lands in the provider's
+ * history. On Windows the temp folder is under the user's profile, so the shared
+ * Public folder is used instead.
+ */
+function neutralBase(): string {
+  const temp = tmpdir();
+  const name = userInfo().username.toLowerCase();
+  if (name === '' || !temp.toLowerCase().includes(name)) return temp;
+  const shared = process.env.PUBLIC ?? 'C:\\Users\\Public';
+  if (process.platform === 'win32' && existsSync(shared) && !shared.toLowerCase().includes(name)) return shared;
+  console.log('warning: the workspace path carries your user name, and the model will see it. Use --workspace-base to choose another folder.');
+  return temp;
 }
 
 function whole(value: string | undefined, flag: string): number {

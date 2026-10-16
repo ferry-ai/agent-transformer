@@ -7,10 +7,11 @@
  * The approver is the normal one: without a terminal it refuses every call that needs
  * approval (every run_command). It is only wrapped to count the refusals.
  */
+import { join } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { Agent, type AgentResult } from '../../src/agent/loop.js';
 import type { ContextOptions } from '../../src/agent/context.js';
-import { TASK_TOOL } from '../../src/agent/state.js';
+import { findLatestTaskState, loadTaskState, TASK_TOOL } from '../../src/agent/state.js';
 import { createApprover } from '../../src/approval-prompt.js';
 import { AdapterError, type ChatAdapter } from '../../src/core/adapter.js';
 import { Transcript } from '../../src/core/transcript.js';
@@ -48,6 +49,8 @@ export interface SpikeOptions {
    * on against a provider that refuses. Default true.
    */
   stopOnError?: boolean;
+  /** Seconds to wait between two tasks (not between the cycles of a task). Default 0. */
+  pauseSec?: number;
   /** Replaces the agent's wait between retries (tests and fake runs). */
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
   /** What the run header says about the adapter. */
@@ -121,6 +124,8 @@ export async function runSpike(options: SpikeOptions): Promise<SpikeSummary> {
       },
     });
 
+    let running: AbortController | undefined;
+    let stopAfter: number | undefined;
     const adapter = new MeteredAdapter(options.adapter, meter);
     const transcript = await Transcript.create(options.dataDir, adapter.name);
     const agent = new Agent({
@@ -130,7 +135,11 @@ export async function runSpike(options: SpikeOptions): Promise<SpikeSummary> {
       maxIterations: options.maxIterations ?? 8,
       maxDurationMs: (options.maxMinutes ?? 30) * 60_000,
       transcript,
-      onEvent: meter.onEvent,
+      onEvent: (event) => {
+        meter.onEvent(event);
+        // A task with stopAfter: the user presses Ctrl+C as that reply arrives, as in the CLI.
+        if (event.type === 'reply' && stopAfter !== undefined && event.iteration >= stopAfter) running?.abort();
+      },
       ...(options.context === undefined ? {} : { context: options.context }),
       ...(options.sleep === undefined ? {} : { sleep: options.sleep }),
     });
@@ -140,6 +149,7 @@ export async function runSpike(options: SpikeOptions): Promise<SpikeSummary> {
       startedAt: new Date().toISOString(),
       target: options.cycles,
       maxIterations: options.maxIterations ?? 8,
+      pauseSec: options.pauseSec ?? 0,
       context: options.context ?? {},
       sandbox: runner.where,
       interactive,
@@ -151,19 +161,31 @@ export async function runSpike(options: SpikeOptions): Promise<SpikeSummary> {
     let stopped: string | undefined;
     for (const [i, task] of tasks.entries()) {
       if (meter.cycles.length >= options.cycles) break;
+      if (i > 0 && (options.pauseSec ?? 0) > 0) await new Promise((done) => setTimeout(done, (options.pauseSec ?? 0) * 1000));
       meter.startTask(i + 1, task.id);
       log(`task ${i + 1} (${task.id}): ${task.prompt}`);
+      running = new AbortController();
+      stopAfter = task.stopAfter;
       let result: AgentResult;
       try {
-        result = await agent.run(task.prompt);
+        if (task.resume) {
+          // As /resume does: the latest task state saved for this workspace, read back from disk.
+          const file = await findLatestTaskState(join(options.dataDir, 'sessions'), options.workspace);
+          if (file === undefined) throw new Error('No saved task of this workspace to resume.');
+          const saved = await loadTaskState(file);
+          result = await agent.resume(saved.state, running.signal, saved.file);
+        } else {
+          result = await agent.run(task.prompt, running.signal);
+        }
       } catch (error) {
         // The loop turns adapter errors into a failed result; anything thrown is a bug worth a stop.
         result = { status: 'failed', answer: '', iterations: 0, toolCalls: 0, pending: 0, error };
       }
+      const planned = task.stopAfter !== undefined && result.status === 'aborted';
       const problem = await task.check(options.workspace, result).catch((error: unknown) => `check failed: ${String(error)}`);
-      const record = meter.endTask(result, problem ?? 'pass');
+      const record = meter.endTask(result, problem ?? 'pass', planned);
       log(`task ${i + 1} (${task.id}): ${record.status}, ${record.iterations} replies, ${record.toolCalls} tool calls, check ${record.check}`);
-      if ((options.stopOnError ?? true) && stopsTheRun(result)) {
+      if ((options.stopOnError ?? true) && !planned && stopsTheRun(result)) {
         stopped = `task ${i + 1} (${task.id}) ended ${result.status}${record.error ? `: ${record.error}` : ''}`;
         break;
       }

@@ -116,6 +116,8 @@ export interface CycleRecord {
   sendMs: number;
   cycleMs: number;
   replyChars?: number;
+  /** Reasoning shown apart from the answer (DeepThink), when there was some. */
+  thinkingChars?: number;
   source?: 'network' | 'dom';
   /** Tool blocks parsed in the reply: valid calls plus malformed blocks. */
   blocks: number;
@@ -153,6 +155,8 @@ export interface CycleRecord {
   pending: number;
   /** The task's status, when it ended in this cycle. */
   end?: string;
+  /** The harness stopped the task here on purpose, to resume it next (as Ctrl+C, then /resume). */
+  plannedStop?: boolean;
   error?: string;
   /** The agent could go on (or end normally) after this cycle. */
   holds: boolean;
@@ -233,10 +237,12 @@ export class SpikeMeter {
     this.task = { index, id, started: this.now(), firstCycle: this.count + 1 };
   }
 
-  endTask(result: AgentResult, check: string): TaskRecord {
+  /** planned: the harness stopped the task on purpose (a stop before a resume), so its last cycle still holds. */
+  endTask(result: AgentResult, check: string, planned = false): TaskRecord {
     const open = this.open;
     if (open) {
       open.record.end = result.status;
+      if (planned) open.record.plannedStop = true;
       open.record.pending = result.pending;
       if (result.error !== undefined) open.record.error = describe(result.error);
       this.close();
@@ -285,6 +291,7 @@ export class SpikeMeter {
       const { reply } = outcome;
       record.replyMs = reply.durationMs;
       record.replyChars = reply.text.length;
+      if (reply.thinking) record.thinkingChars = reply.thinking.length;
       record.source = reply.source;
       record.attachments = attempt.attachments;
       if (reply.filtered === true) record.filtered = true;
@@ -305,6 +312,13 @@ export class SpikeMeter {
       this.waiting(event.iteration);
       return;
     }
+    if (event.type === 'rollover') {
+      // Shown on the cycle whose message goes to the new chat.
+      this.pendingRollover = { reason: event.reason, chat: event.chat, used: event.used, limit: event.limit };
+      return;
+    }
+    // A resume comes before its first message: nothing to count yet (its chat number shows in the next cycle).
+    if (event.type === 'resume') return;
     const record = this.current();
     switch (event.type) {
       case 'reply':
@@ -342,14 +356,8 @@ export class SpikeMeter {
       case 'summarized':
         record.summarized += 1;
         break;
-      case 'rollover':
-        // Shown on the cycle whose message goes to the new chat.
-        this.pendingRollover = { reason: event.reason, chat: event.chat, used: event.used, limit: event.limit };
-        break;
       case 'attachments_off':
         record.attachmentsOff = true;
-        break;
-      case 'resume':
         break;
     }
   };
@@ -420,7 +428,8 @@ export class SpikeMeter {
     // A re-ask is the cycle's own message, or a request to repeat an unreadable reply; resends of the same message are not.
     record.reasks = record.attempts.filter((attempt, i) => (i === 0 ? REASK_KINDS.has(attempt.prompt) : attempt.prompt === 'repeat')).length;
     // A blank reply taken for the final answer ends the task as if it were done: the bridge did not hold.
-    record.holds = record.end === undefined ? true : !BROKEN.has(record.end) && !(record.end === 'done' && open.lastBlank);
+    record.holds =
+      record.end === undefined || record.plannedStop === true ? true : !BROKEN.has(record.end) && !(record.end === 'done' && open.lastBlank);
     record.clean =
       record.holds &&
       record.attempts.length === 1 &&

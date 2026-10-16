@@ -59,9 +59,9 @@ export function cycleTable(cycles: readonly CycleRecord[]): string {
       .filter(Boolean)
       .join(', ');
     const budget = cycle.budget ? `${cycle.budget.used}` : '–';
-    const end = cycle.end === undefined ? '' : cycle.holds ? cycle.end : `**${cycle.end}**`;
+    const end = cycle.end === undefined ? '' : cycle.plannedStop ? `${cycle.end} (planned)` : cycle.holds ? cycle.end : `**${cycle.end}**`;
     rows.push(
-      `| ${cycle.cycle} | ${cycle.task}.${cycle.iteration} ${cycle.taskId} | ${cycle.chat} | ${cycle.prompt} | ${seconds(cycle.replyMs)} | ${cycle.attempts.length} | ` +
+      `| ${cycle.cycle} | ${cycle.task}.${cycle.iteration} ${cycle.taskId} | ${cycle.chat} | ${cycle.prompt} | ${seconds(cycle.replyMs)}${cycle.source === 'dom' ? ' (page)' : ''} | ${cycle.attempts.length} | ` +
         `${cycle.blocks} | ${count(cycle.malformed)} | ${count(cycle.cutOff)} | ${tools || '–'} | ${count(cycle.reasks)} | ${errors} | ` +
         `${cycle.filtered ? 'yes' : ''} | ${budget} | ${notes} | ${end} |`,
     );

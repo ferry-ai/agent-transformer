@@ -10,11 +10,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { FakeAdapter } from '../../src/adapters/fake/index.js';
+import { CONTEXT_DEFAULTS, summarize } from '../../src/agent/context.js';
 import { REPEAT_REQUEST } from '../../src/agent/prompt.js';
 import { injectFaults, parseFaults } from './faults.js';
 import { runSpike, type SpikeOptions } from './harness.js';
 import { endsInsideFence, promptKind, type CycleRecord } from './meter.js';
-import { idealScript } from './project.js';
+import { ACCESS_ORDERS, idealScript, LOG_ERRORS, PROJECT_FILES } from './project.js';
 import { readSpikeLog, renderReport } from './report.js';
 
 async function spike(faults: string, cycles: number, extra: Partial<SpikeOptions> = {}) {
@@ -83,29 +84,49 @@ const QUIET = {
   holds: true,
 };
 
-test('the ideal script: 20 cycles held, every task done and checked', async () => {
+test('the ideal script: 20 cycles and the task under way, all held, every task done and checked', async () => {
   const { summary, adapter, log } = await spike('', 20);
   const t = summary.totals;
-  assert.equal(t.cycles, 20);
-  assert.equal(t.heldInARow, 20);
-  assert.equal(t.clean, 20);
-  assert.equal(t.blocks, 18);
-  assert.equal(t.calls, 18);
+  // The 20th cycle falls inside the 8th task, which runs to its end.
+  assert.equal(t.cycles, 21);
+  assert.equal(t.heldInARow, 21);
+  assert.equal(t.clean, 21);
+  assert.equal(t.blocks, 17);
+  assert.equal(t.calls, 17);
   assert.equal(t.malformed + t.cutOff + t.reasks + t.retries + t.drift + t.timeouts + t.filtered + t.emptyReplies, 0);
   assert.deepEqual(t.errors, {});
-  assert.deepEqual(t.tools, { list_dir: 1, read_file: 10, edit_file: 4, update_task: 1, write_file: 1, run_command: 1 });
+  assert.deepEqual(t.tools, { list_dir: 1, read_file: 10, edit_file: 1, run_command: 1, write_file: 2, update_task: 1 });
   // run_command asks for approval, and without a terminal the normal approver says no.
   assert.equal(t.denied, 1);
   assert.equal(t.toolFailures, 0);
-  // The long log is summarized and attached: the README's upload, through the task state's budget.
-  assert.equal(t.summarized, 1);
-  assert.equal(t.attachments, 1);
+  // The two long logs are summarized and attached: the README's upload, through the task state's budget.
+  assert.equal(t.summarized, 2);
+  assert.equal(t.attachments, 2);
+  assert.equal(adapter.sent.filter((sent) => sent.attachments.length > 0).length, 2);
   assert.deepEqual(t.rollovers, {});
-  assert.deepEqual(t.taskStatuses, { done: 7 });
-  assert.equal(t.checksPassed, 7);
+  // The planned stop (Ctrl+C) holds; the resume goes on in a new chat, from the state file.
+  assert.deepEqual(t.taskStatuses, { done: 7, aborted: 1 });
+  assert.equal(t.chats, 2);
+  assert.equal(t.checksPassed, 8);
   assert.equal(summary.stopped, undefined);
-  assert.equal(adapter.sent.filter((sent) => sent.attachments.length > 0).length, 1);
-  assert.match(renderReport(log), /held in a row from the first: \*\*20\*\*/);
+  assert.match(renderReport(log), /held in a row from the first: \*\*21\*\*/);
+});
+
+test('the planned stop and the resume: the stop holds, the unrun call is in the envelope, a new chat goes on', async () => {
+  const { adapter, cycle } = await spike('', 16);
+  assert.equal(cycle(13).taskId, 'math-doc');
+  assert.equal(cycle(13).end, 'aborted');
+  assert.equal(cycle(13).plannedStop, true);
+  assert.equal(cycle(13).pending, 1);
+  assert.equal(cycle(13).holds, true);
+  assert.equal(cycle(14).taskId, 'math-doc-resume');
+  assert.equal(cycle(14).prompt, 'envelope:resume');
+  assert.equal(cycle(14).chat, 2);
+  assert.equal(adapter.newChats, 1);
+  const envelope = adapter.sent.find((sent) => promptKind(sent.message) === 'envelope:resume')?.message ?? '';
+  assert.match(envelope, /The task stopped earlier \(aborted\)/);
+  assert.match(envelope, /"call": "write_file docs\/math\.md",\s+"ok": false,\s+"result": "Not run: the task stopped \(aborted\) before it ran\."/);
+  assert.equal(cycle(16).end, 'done');
 });
 
 test('a malformed block: counted in its cycle, re-asked in the next', async () => {
@@ -232,16 +253,17 @@ test('a call to an unknown tool: counted as such and as drift, not as a tool err
 });
 
 test('a failed upload: attachments go off and the same cycle is sent again with the summary', async () => {
-  const { summary, cycle } = await spike('send_failed@14', 15);
-  const attempts = cycle(14).attempts.map((attempt) => [attempt.prompt, attempt.attachments, attempt.error]);
+  const { summary, cycle } = await spike('send_failed@8', 8);
+  const attempts = cycle(8).attempts.map((attempt) => [attempt.prompt, attempt.attachments, attempt.error]);
   assert.deepEqual(attempts, [
     ['results', 1, 'send_failed'],
     ['results', 0, undefined],
   ]);
-  assert.equal(cycle(14).attachmentsOff, true);
-  assert.equal(cycle(14).attachments, 0);
-  assert.equal(cycle(14).holds, true);
-  assert.equal(summary.tasks[4]?.check, 'pass');
+  assert.equal(cycle(8).attachmentsOff, true);
+  assert.equal(cycle(8).attachments, 0);
+  assert.equal(cycle(8).holds, true);
+  assert.equal(summary.tasks[2]?.id, 'log');
+  assert.equal(summary.tasks[2]?.check, 'pass');
 });
 
 test('the gate: an edit in a chat that has not read the file is counted as gated', async () => {
@@ -250,6 +272,19 @@ test('the gate: an edit in a chat that has not read the file is counted as gated
   assert.equal(cycle(6).chat, 2);
   assert.equal(cycle(6).gated, 1);
   assert.deepEqual(cycle(6).tools, {});
+});
+
+test('the logs: summarized and attached; the summary keeps the ERROR lines and none of the /api/orders ones', () => {
+  for (const name of ['data/server.log', 'data/access.log']) {
+    const text = PROJECT_FILES[name] ?? '';
+    // Over the inline limit of read_file, under the toolbox's cut: a summary plus the whole file attached.
+    assert.ok(text.length > CONTEXT_DEFAULTS.inlineReadChars && text.length < 20_000, `${name}: ${text.length} characters`);
+  }
+  const server = summarize(PROJECT_FILES['data/server.log'] ?? '', CONTEXT_DEFAULTS.inlineReadChars).text;
+  for (const line of Object.values(LOG_ERRORS)) assert.ok(server.includes(line), line);
+  const access = PROJECT_FILES['data/access.log'] ?? '';
+  assert.equal(access.match(/\/api\/orders/g)?.length, ACCESS_ORDERS.to - ACCESS_ORDERS.from + 1);
+  assert.equal(summarize(access, CONTEXT_DEFAULTS.inlineReadChars).text.match(/\/api\/orders/g), null);
 });
 
 test('promptKind tells the messages apart', () => {

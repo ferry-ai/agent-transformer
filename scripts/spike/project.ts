@@ -16,6 +16,15 @@ export const LOG_ERRORS: Readonly<Record<number, string>> = {
 };
 const LOG_LINES = 270;
 
+/**
+ * data/access.log: about 18 000 characters too, and every request to /api/orders sits
+ * in the middle of the file, the part the inline summary leaves out (the summary keeps
+ * the first and last 6 400 characters). Counting them needs the attached full text:
+ * the task that asks for it tells whether the model reads attachments.
+ */
+export const ACCESS_ORDERS = { from: 150, to: 250 } as const;
+const ACCESS_LINES = 400;
+
 export const PROJECT_FILES: Readonly<Record<string, string>> = {
   'README.md': [
     '# Tiny utils',
@@ -26,7 +35,7 @@ export const PROJECT_FILES: Readonly<Record<string, string>> = {
     '- src/strings.js: capitalize() and reverse()',
     '- test/math.test.js: tests for src/math.js, run with `node --test test/`',
     '- notes/todo.md: what is left to do',
-    '- data/server.log: a sample log file',
+    '- data/server.log, data/access.log: sample log files',
     '',
   ].join('\n'),
   'package.json': `${JSON.stringify({ name: 'tiny-utils', version: '1.0.0', type: 'module', scripts: { test: 'node --test test/' } }, null, 2)}\n`,
@@ -50,6 +59,7 @@ export const PROJECT_FILES: Readonly<Record<string, string>> = {
   ].join('\n'),
   'notes/todo.md': '# To do\n\n- [ ] Fix subtract()\n- [ ] Document the string helpers\n- [ ] Add multiply()\n',
   'data/server.log': serverLog(),
+  'data/access.log': accessLog(),
 };
 
 /**
@@ -64,6 +74,17 @@ function serverLog(): string {
     const hour = String(Math.floor(i / 60)).padStart(2, '0');
     const at = `2026-10-01T${hour}:${minute}:00Z`;
     lines.push(`${at} ${LOG_ERRORS[i] ?? `INFO request ${1000 + i} served in ${10 + ((i * 7) % 90)} ms by worker ${1 + (i % 4)}`}`);
+  }
+  return `${lines.join('\n')}\n`;
+}
+
+function accessLog(): string {
+  const others = ['/api/items', '/api/users', '/health', '/metrics'];
+  const lines: string[] = [];
+  for (let i = 1; i <= ACCESS_LINES; i += 1) {
+    const at = `2026-10-02T00:${String(Math.floor(i / 60) % 60).padStart(2, '0')}:${String(i % 60).padStart(2, '0')}Z`;
+    const path = i >= ACCESS_ORDERS.from && i <= ACCESS_ORDERS.to ? '/api/orders' : others[i % others.length];
+    lines.push(`${at} GET ${path} 200 ${5 + ((i * 13) % 60)} ms`);
   }
   return `${lines.join('\n')}\n`;
 }
@@ -84,6 +105,10 @@ export interface SpikeTask {
   replies: string[];
   /** Whether the task got done, judged on the workspace and the answer; says what is wrong. */
   check(root: string, result: AgentResult): Promise<string | undefined>;
+  /** The user stops the task (Ctrl+C) once this many replies have arrived: the calls of the last one stay unrun. */
+  stopAfter?: number;
+  /** Continue the task saved last in this workspace, as /resume does, instead of starting a new one. */
+  resume?: boolean;
 }
 
 const tool = (header: object, body?: string): string =>
@@ -100,6 +125,7 @@ function expect(ok: boolean, problem: string): string | undefined {
 
 const SUBTRACT_FIXED = 'export function subtract(a, b) {\n  return a - b;\n}';
 const MULTIPLY = 'export function multiply(a, b) {\n  return a * b;\n}';
+const MATH_DOC = '# Math\n\n- add(a, b) returns the sum of a and b.\n- subtract(a, b) returns a minus b.\n';
 
 export const TASKS: readonly SpikeTask[] = [
   {
@@ -123,6 +149,70 @@ export const TASKS: readonly SpikeTask[] = [
     ],
     check: async (root) => expect((await text(root, 'src/math.js'))?.includes('return a - b;') === true, 'subtract() still adds'),
   },
+  {
+    id: 'log',
+    prompt: 'Read data/server.log. How many lines contain ERROR, and what does the first of them say? Reply in two lines.',
+    replies: [
+      tool({ tool: 'read_file', args: { path: 'data/server.log' } }),
+      '3 lines contain ERROR.\nThe first: "cache warm-up failed: timeout after 30 s".',
+    ],
+    check: async (_root, result) => expect(/\b3\b|three/i.test(result.answer), 'the answer does not say 3'),
+  },
+  {
+    id: 'run-tests',
+    prompt:
+      'Check that the tests pass: run `node --test test/` with run_command. If the command is refused, read src/math.js and test/math.test.js instead and say whether the tests should pass.',
+    replies: [
+      tool({ tool: 'run_command', args: {} }, 'node --test test/'),
+      `The command was refused, so I'll read the code.\n${tool({ tool: 'read_file', args: { path: 'src/math.js' } })}\n${tool({ tool: 'read_file', args: { path: 'test/math.test.js' } })}`,
+      'The command was refused. From the code, both tests (add and subtract) should pass.',
+    ],
+    check: async (_root, result) => expect(/pass/i.test(result.answer), 'no verdict on the tests'),
+  },
+  {
+    id: 'math-doc',
+    prompt: 'Read src/math.js, then create docs/math.md with write_file: one line per exported function, saying what it returns. Reply with the file name.',
+    // The user stops it (Ctrl+C) when the second reply arrives: its write_file stays unrun, and the next task resumes it.
+    stopAfter: 2,
+    replies: [
+      tool({ tool: 'read_file', args: { path: 'src/math.js' } }),
+      tool({ tool: 'write_file', args: { path: 'docs/math.md' } }, MATH_DOC),
+    ],
+    check: async (root, result) =>
+      expect(
+        result.status === 'aborted' && result.pending === 1 && (await text(root, 'docs/math.md')) === undefined,
+        'not stopped with its write_file unrun',
+      ),
+  },
+  {
+    id: 'math-doc-resume',
+    prompt: '/resume',
+    resume: true,
+    replies: [
+      tool({ tool: 'read_file', args: { path: 'src/math.js' } }),
+      tool({ tool: 'write_file', args: { path: 'docs/math.md' } }, MATH_DOC),
+      'Created docs/math.md.',
+    ],
+    check: async (root) => {
+      const doc = await text(root, 'docs/math.md');
+      return expect(doc !== undefined && /add/.test(doc) && /subtract/.test(doc), 'docs/math.md is missing or incomplete');
+    },
+  },
+  {
+    id: 'access-log',
+    prompt: 'Read data/access.log. How many requests went to /api/orders? Count them in the whole file and reply with the number.',
+    replies: [
+      tool({ tool: 'read_file', args: { path: 'data/access.log' } }),
+      `${ACCESS_ORDERS.to - ACCESS_ORDERS.from + 1} requests went to /api/orders.`,
+    ],
+    // Only the attached full text has them: a wrong count says the model saw the summary alone.
+    check: async (_root, result) =>
+      expect(
+        new RegExp(`\\b${ACCESS_ORDERS.to - ACCESS_ORDERS.from + 1}\\b`).test(result.answer),
+        'wrong count: the model did not read the attached file (or could not)',
+      ),
+  },
+  // Spares, for a model that needs fewer replies than the scripted one.
   {
     id: 'usage-doc',
     prompt:
@@ -168,26 +258,6 @@ export const TASKS: readonly SpikeTask[] = [
     },
   },
   {
-    id: 'log',
-    prompt: 'Read data/server.log. How many lines contain ERROR, and what does the first of them say? Reply in two lines.',
-    replies: [
-      tool({ tool: 'read_file', args: { path: 'data/server.log' } }),
-      '3 lines contain ERROR.\nThe first: "cache warm-up failed: timeout after 30 s".',
-    ],
-    check: async (_root, result) => expect(/\b3\b|three/i.test(result.answer), 'the answer does not say 3'),
-  },
-  {
-    id: 'run-tests',
-    prompt:
-      'Check that the tests pass: run `node --test test/` with run_command. If the command is refused, read src/math.js and test/math.test.js instead and say whether the tests should pass.',
-    replies: [
-      tool({ tool: 'run_command', args: {} }, 'node --test test/'),
-      `The command was refused, so I'll read the code.\n${tool({ tool: 'read_file', args: { path: 'src/math.js' } })}\n${tool({ tool: 'read_file', args: { path: 'test/math.test.js' } })}`,
-      'The command was refused. From the code, the three tests (add, subtract, multiply) should pass.',
-    ],
-    check: async (_root, result) => expect(/pass/i.test(result.answer), 'no verdict on the tests'),
-  },
-  {
     id: 'todo',
     prompt:
       'In notes/todo.md, mark the first and the third items as done and add the item "- [ ] Write a changelog" at the end. Read the file first, then use edit_file. Reply with the new list.',
@@ -208,14 +278,14 @@ export const TASKS: readonly SpikeTask[] = [
   {
     id: 'changelog',
     prompt:
-      'Create CHANGELOG.md with write_file: a "## Unreleased" heading and one bullet per change made to this project in this chat. Then list the files of the project with list_dir (depth 2) and reply with that list.',
+      'Create CHANGELOG.md with write_file: a "## Unreleased" heading and one bullet per change made to this project so far (look at the files if you need to). Then list the files of the project with list_dir (depth 2) and reply with that list.',
     replies: [
       tool(
         { tool: 'write_file', args: { path: 'CHANGELOG.md' } },
-        '# Changelog\n\n## Unreleased\n\n- Fixed subtract(), which added instead of subtracting.\n- Added docs/usage.md.\n- Added multiply() and its test.\n- Updated notes/todo.md.\n',
+        '# Changelog\n\n## Unreleased\n\n- Fixed subtract(), which added instead of subtracting.\n- Added docs/usage.md and docs/math.md.\n- Added multiply() and its test.\n- Updated notes/todo.md.\n',
       ),
       tool({ tool: 'list_dir', args: { path: '.', depth: 2 } }),
-      'CHANGELOG.md, README.md, package.json, data/server.log, docs/usage.md, notes/todo.md, src/math.js, src/strings.js, test/math.test.js',
+      'CHANGELOG.md, README.md, package.json, data/, docs/, notes/, src/, test/',
     ],
     check: async (root) => expect(/Unreleased/.test((await text(root, 'CHANGELOG.md')) ?? ''), 'CHANGELOG.md is missing'),
   },
@@ -233,15 +303,6 @@ export const TASKS: readonly SpikeTask[] = [
       'Added test/strings.test.js.',
     ],
     check: async (root) => expect(/reverse/.test((await text(root, 'test/strings.test.js')) ?? ''), 'test/strings.test.js is missing'),
-  },
-  {
-    id: 'left-to-do',
-    prompt: 'Read notes/todo.md and CHANGELOG.md, then reply with one sentence: what is still left to do?',
-    replies: [
-      `${tool({ tool: 'read_file', args: { path: 'notes/todo.md' } })}\n${tool({ tool: 'read_file', args: { path: 'CHANGELOG.md' } })}`,
-      'Still to do: document the string helpers in the todo list and write the changelog entry for the next release.',
-    ],
-    check: async (_root, result) => expect(result.answer.trim().length > 10, 'no answer'),
   },
 ];
 
