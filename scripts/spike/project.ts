@@ -105,8 +105,8 @@ export interface SpikeTask {
   replies: string[];
   /** Whether the task got done, judged on the workspace and the answer; says what is wrong. */
   check(root: string, result: AgentResult): Promise<string | undefined>;
-  /** The user stops the task (Ctrl+C) once this many replies have arrived: the calls of the last one stay unrun. */
-  stopAfter?: number;
+  /** The user stops the task (Ctrl+C) as the first reply that calls this tool arrives: that reply's calls stay unrun. */
+  stopAt?: string;
   /** Continue the task saved last in this workspace, as /resume does, instead of starting a new one. */
   resume?: boolean;
 }
@@ -172,15 +172,15 @@ export const TASKS: readonly SpikeTask[] = [
   {
     id: 'math-doc',
     prompt: 'Read src/math.js, then create docs/math.md with write_file: one line per exported function, saying what it returns. Reply with the file name.',
-    // The user stops it (Ctrl+C) when the second reply arrives: its write_file stays unrun, and the next task resumes it.
-    stopAfter: 2,
+    // The user stops it (Ctrl+C) as the reply with write_file arrives: the call stays unrun, and the next task resumes it.
+    stopAt: 'write_file',
     replies: [
       tool({ tool: 'read_file', args: { path: 'src/math.js' } }),
       tool({ tool: 'write_file', args: { path: 'docs/math.md' } }, MATH_DOC),
     ],
     check: async (root, result) =>
       expect(
-        result.status === 'aborted' && result.pending === 1 && (await text(root, 'docs/math.md')) === undefined,
+        result.status === 'aborted' && result.pending >= 1 && (await text(root, 'docs/math.md')) === undefined,
         'not stopped with its write_file unrun',
       ),
   },

@@ -11,6 +11,7 @@ import { join } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { Agent, type AgentResult } from '../../src/agent/loop.js';
 import type { ContextOptions } from '../../src/agent/context.js';
+import { parseToolCalls } from '../../src/agent/protocol.js';
 import { findLatestTaskState, loadTaskState, TASK_TOOL } from '../../src/agent/state.js';
 import { createApprover } from '../../src/approval-prompt.js';
 import { AdapterError, type ChatAdapter } from '../../src/core/adapter.js';
@@ -125,7 +126,7 @@ export async function runSpike(options: SpikeOptions): Promise<SpikeSummary> {
     });
 
     let running: AbortController | undefined;
-    let stopAfter: number | undefined;
+    let stopAt: string | undefined;
     const adapter = new MeteredAdapter(options.adapter, meter);
     const transcript = await Transcript.create(options.dataDir, adapter.name);
     const agent = new Agent({
@@ -137,8 +138,8 @@ export async function runSpike(options: SpikeOptions): Promise<SpikeSummary> {
       transcript,
       onEvent: (event) => {
         meter.onEvent(event);
-        // A task with stopAfter: the user presses Ctrl+C as that reply arrives, as in the CLI.
-        if (event.type === 'reply' && stopAfter !== undefined && event.iteration >= stopAfter) running?.abort();
+        // A task with stopAt: the user presses Ctrl+C as the first reply that calls that tool arrives, as in the CLI.
+        if (event.type === 'reply' && stopAt !== undefined && calls(event.reply.text).includes(stopAt)) running?.abort();
       },
       ...(options.context === undefined ? {} : { context: options.context }),
       ...(options.sleep === undefined ? {} : { sleep: options.sleep }),
@@ -165,7 +166,7 @@ export async function runSpike(options: SpikeOptions): Promise<SpikeSummary> {
       meter.startTask(i + 1, task.id);
       log(`task ${i + 1} (${task.id}): ${task.prompt}`);
       running = new AbortController();
-      stopAfter = task.stopAfter;
+      stopAt = task.stopAt;
       let result: AgentResult;
       try {
         if (task.resume) {
@@ -181,7 +182,7 @@ export async function runSpike(options: SpikeOptions): Promise<SpikeSummary> {
         // The loop turns adapter errors into a failed result; anything thrown is a bug worth a stop.
         result = { status: 'failed', answer: '', iterations: 0, toolCalls: 0, pending: 0, error };
       }
-      const planned = task.stopAfter !== undefined && result.status === 'aborted';
+      const planned = task.stopAt !== undefined && result.status === 'aborted';
       const problem = await task.check(options.workspace, result).catch((error: unknown) => `check failed: ${String(error)}`);
       const record = meter.endTask(result, problem ?? 'pass', planned);
       log(`task ${i + 1} (${task.id}): ${record.status}, ${record.iterations} replies, ${record.toolCalls} tool calls, check ${record.check}`);
@@ -202,6 +203,11 @@ export async function runSpike(options: SpikeOptions): Promise<SpikeSummary> {
     await runner?.close();
     removeExitHandlers();
   }
+}
+
+/** The tools a reply calls, as the agent reads them. */
+function calls(text: string): string[] {
+  return parseToolCalls(text, { isTool: () => true }).flatMap((block) => (block.kind === 'call' ? [block.call.tool] : []));
 }
 
 /** A task that ended on the provider's side (an adapter error, the content filter): going on would push against it. */
