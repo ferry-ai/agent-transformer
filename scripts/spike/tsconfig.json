@@ -1,0 +1,5 @@
+{
+  "//": "Typechecks the spike scripts (npx tsc -p scripts/spike); the root tsconfig covers src only.",
+  "extends": "../../tsconfig.json",
+  "include": ["./*.ts"]
+}
