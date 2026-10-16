@@ -107,8 +107,10 @@ neutral and written for this purpose (`capture.ts --list`); send nothing else.
        npm run agent -- --task "Create notes.md with a two-item list, then add a third item with edit_file." --workspace <empty temp folder>
 
 `--mock` runs the capture on the local mock page, headless, in a temp data dir; its
-sessions are labelled as mocks and `sanitize.ts` refuses to write them into the fixtures
-folder. Use it to try the scripts, never as calibration.
+sessions are labelled as mocks (an `origin` starting with `MOCK`), and `sanitize.ts` refuses to
+write them into the fixtures folder, whatever `--out` says (the path is compared resolved,
+without a trailing separator, case-insensitively on Windows and macOS). Should one get there
+anyway, `check-fixtures.ts` and `npm test` fail on it. Use it to try the scripts, never as calibration.
 
 ## Recapturing
 

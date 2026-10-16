@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import { basename } from 'node:path';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { basename, join, sep } from 'node:path';
 import { test } from 'node:test';
-import { fixtureFiles, streamExpectation, strayFixtureFiles } from './testing/fixtures.js';
+import { FIXTURES_DIR, fixtureFiles, mockFixtures, sameFolder, streamExpectation, strayFixtureFiles } from './testing/fixtures.js';
 import { checkText, IdMap, sanitizeHtml, sanitizeStream } from './testing/sanitize.js';
 
 // The sanitizer stands between a logged-in session and a public repository: these
@@ -85,4 +86,27 @@ test('committed fixtures carry nothing private and no stray files', () => {
   const findings = fixtureFiles().flatMap((file) => checkText(basename(file), readFileSync(file, 'utf8')));
   assert.deepEqual(findings, []);
   assert.deepEqual(strayFixtureFiles(), []);
+  // A fixture from a --mock session would replay as a capture of DeepSeek.
+  assert.deepEqual(mockFixtures(), []);
+});
+
+test('the fixtures folder is recognised however --out spells it', () => {
+  const bare = FIXTURES_DIR.replace(/[\\/]+$/, '');
+  assert.ok(sameFolder(bare, FIXTURES_DIR));
+  assert.ok(sameFolder(`${bare}/`, FIXTURES_DIR));
+  assert.ok(sameFolder(`${bare}${sep}${sep}`, FIXTURES_DIR));
+  assert.ok(sameFolder(join(FIXTURES_DIR, 'sub', '..'), FIXTURES_DIR));
+  if (process.platform === 'win32' || process.platform === 'darwin') assert.ok(sameFolder(FIXTURES_DIR.toUpperCase(), FIXTURES_DIR));
+  assert.ok(!sameFolder(join(FIXTURES_DIR, '..'), FIXTURES_DIR));
+});
+
+test('a fixture written from a --mock session is told apart from a capture', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'agent-fixtures-'));
+  try {
+    writeFileSync(join(dir, 'short.json'), JSON.stringify({ origin: 'MOCK, not a calibration: capture.ts --mock' }));
+    writeFileSync(join(dir, 'code.json'), JSON.stringify({ origin: 'captured 2026-10-16 from chat.deepseek.com' }));
+    assert.deepEqual(mockFixtures(dir), ['short']);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

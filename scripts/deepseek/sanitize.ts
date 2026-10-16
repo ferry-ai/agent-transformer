@@ -7,12 +7,13 @@
  *   npx tsx scripts/deepseek/sanitize.ts "<session folder>" --only short,code --deny "<your name>"
  *
  * It reads only the session folder and writes only to the fixtures folder (or --out).
+ * A --mock session never goes into the fixtures folder, whatever --out says.
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
-import { FIXTURES_DIR, sameWords, streamExpectation, type PageExpectation } from '../../src/adapters/deepseek/testing/fixtures.js';
+import { FIXTURES_DIR, MOCK_ORIGIN, sameFolder, sameWords, streamExpectation, type PageExpectation } from '../../src/adapters/deepseek/testing/fixtures.js';
 import { PageRenderer } from '../../src/adapters/deepseek/testing/render.js';
 import { checkText, IdMap, sanitizeHtml, sanitizeStream, scrubText, type Finding } from '../../src/adapters/deepseek/testing/sanitize.js';
 
@@ -61,8 +62,11 @@ async function main(): Promise<void> {
   const only = values.only?.split(',').map((id) => id.trim()).filter(Boolean);
 
   const { captures, date, mock } = readTranscript(session);
-  if (mock && values.out === undefined && !values['dry-run']) {
-    throw new Error('This session is a --mock dry run, not a capture of DeepSeek: give --out <folder> to write it elsewhere.');
+  // Whatever --out says: mock fixtures in the fixtures folder would replay as captures.
+  if (mock && sameFolder(out, FIXTURES_DIR) && !values['dry-run']) {
+    throw new Error(
+      'This session is a --mock dry run, not a capture of DeepSeek: it never goes into the fixtures folder. Give --out <another folder>.',
+    );
   }
   const chosen = captures.filter((capture) => only === undefined || only.includes(capture.id));
   if (chosen.length === 0) throw new Error('No captured replies in this session (or none matching --only).');
@@ -91,7 +95,7 @@ async function main(): Promise<void> {
       const pageSeen: PageExpectation | undefined = html !== undefined && renderer ? await renderer.render(html) : undefined;
       const meta = {
         origin: mock
-          ? `MOCK, not a calibration: capture.ts --mock against the local stand-in page, ${date}: ${capture.covers}`
+          ? `${MOCK_ORIGIN}, not a calibration: capture.ts --mock against the local stand-in page, ${date}: ${capture.covers}`
           : `captured ${date} from chat.deepseek.com with scripts/deepseek/capture.ts: ${capture.covers}`,
         prompt: scrubText(capture.prompt, ids),
         adapter: { source: capture.source ?? null, filtered: capture.filtered ?? false },

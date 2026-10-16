@@ -1,6 +1,6 @@
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { endedEarly, parseCompletionStream } from '../stream.js';
 
 /**
@@ -66,6 +66,34 @@ export function loadFixtures(dir: string = FIXTURES_DIR): Fixture[] {
         expect: { stream: meta.stream, page: meta.page },
       };
     });
+}
+
+/** Origins written from a `capture.ts --mock` session start with this: never calibration. */
+export const MOCK_ORIGIN = 'MOCK';
+
+/** Fixtures whose origin says they come from the mock page, not from DeepSeek. */
+export function mockFixtures(dir: string = FIXTURES_DIR): string[] {
+  return loadFixtures(dir)
+    .filter((fixture) => fixture.origin.trimStart().toUpperCase().startsWith(MOCK_ORIGIN))
+    .map((fixture) => fixture.name);
+}
+
+/**
+ * True when two paths name the same folder: resolved, without a trailing separator,
+ * through symlinks when the folders exist, and case-insensitively on Windows and macOS.
+ */
+export function sameFolder(a: string, b: string): boolean {
+  const normal = (path: string): string => {
+    let full = resolve(path);
+    try {
+      full = realpathSync.native(full);
+    } catch {
+      // Not there yet: compare the resolved path.
+    }
+    full = full.replace(/(?<=.)[\\/]+$/, '');
+    return process.platform === 'win32' || process.platform === 'darwin' ? full.toLowerCase() : full;
+  };
+  return normal(a) === normal(b);
 }
 
 /** Every file in the fixtures folder, for the leak check. */
