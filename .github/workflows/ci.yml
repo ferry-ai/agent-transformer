@@ -1,10 +1,9 @@
 name: CI
 
-# Pull requests, and pushes to main once merged. Pushes to other branches are left out:
-# a branch with an open pull request would otherwise run every job twice.
+# Every push, on any branch, and every pull request; or by hand. A push to a branch with an open
+# pull request runs the jobs twice: once for the branch, once for its merge with the base.
 on:
   push:
-    branches: [main]
   pull_request:
   workflow_dispatch:
 
