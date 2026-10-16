@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import { createInterface, type Interface } from 'node:readline/promises';
+import { createInterface } from 'node:readline/promises';
 import { Agent, type AgentEvent, type AgentResult } from './agent/loop.js';
 import { createApprover } from './approval-prompt.js';
 import { McpReview } from './mcp-review.js';
@@ -42,7 +42,7 @@ export interface AgentCliOptions {
    * For an adapter that reads the terminal while it waits for a reply (--adapter clipboard):
    * gets this readline, so both share stdin. No "is answering" ticker is drawn then.
    */
-  attachInput?: (rl: Interface) => void;
+  attachInput?: (rl: ReturnType<typeof createInterface>) => void;
 }
 
 const COMMANDS = `Commands:
