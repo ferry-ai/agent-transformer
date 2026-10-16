@@ -476,6 +476,41 @@ test('a saved task resumes in a new chat from its state file, and only in its wo
   await second.done();
 });
 
+test('calls left unrun by a stop mid-reply, or held behind a malformed block, are saved as not run', async () => {
+  const { transcript, done } = await session();
+  const controller = new AbortController();
+  const stop: Tool = {
+    name: 'stop',
+    description: 'Edits, while the user stops the agent.',
+    params: { type: 'object', properties: {} },
+    run: async () => {
+      controller.abort();
+      return { ok: true, text: 'edited' };
+    },
+  };
+  const { agent } = await setup([`${call('stop')}\n${call('note', { text: 'run the tests' })}`, 'never'], {
+    transcript,
+    toolbox: new Toolbox([...tools(), stop]),
+  });
+  assert.equal((await agent.run('Edit, then test', controller.signal)).status, 'aborted');
+  const { state } = await loadTaskState(transcript.dir);
+  assert.deepEqual(
+    state.recent.map((recent) => [recent.reply, recent.call, recent.ok, recent.result]),
+    [
+      [1, 'stop', true, 'edited'],
+      [1, 'note run the tests', false, 'Not run: the user stopped the agent.'],
+    ],
+  );
+  await done();
+
+  const held = await setup([`${tool('not json')}\n${call('note', { text: 'held' })}`, 'Done.']);
+  await held.agent.run('task');
+  assert.deepEqual(
+    held.agent.state?.recent.map((recent) => [recent.call, recent.ok, recent.result]),
+    [['note held', false, 'Not run: block 1 is malformed. Send this call again after fixing it.']],
+  );
+});
+
 test('edit_file needs the file read (or written) in the same conversation', async () => {
   const base = await mkdtemp(join(tmpdir(), 'agent-gate-'));
   const root = join(base, 'workspace');

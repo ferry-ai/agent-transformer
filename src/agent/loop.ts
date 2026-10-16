@@ -367,6 +367,8 @@ export class Agent {
         if (signal?.aborted) blocked ??= 'Not run: the user stopped the agent.';
         if (blocked !== undefined) {
           results.push({ index: call.index, tool: call.tool, ok: false, text: blocked });
+          // In the state too: after a stop, a resume must know this call never ran.
+          if (settings) notePending(state, state.iterations, call, blocked.replace(/^Not run: /, ''));
           continue;
         }
         this.emit({ type: 'call', call });

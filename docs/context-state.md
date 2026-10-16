@@ -45,7 +45,7 @@ the file 0600, like the transcript. A failed save is logged once
 | `checklist` | `{text, done}` steps written by the model with `update_task` (40 steps, 300 characters each) |
 | `decisions` | lines written by the model with `update_task` (the last 20, 400 characters each) |
 | `files.read`, `files.changed` | workspace paths, `/` separators, most recent last (200 each) |
-| `recent` | the last 8 calls: `{reply, call, ok, result}`, where `call` is one line (`run_command npm test`) and `result` the first and last lines of the output (300 characters). Calls of the last reply that never ran because the task stopped are listed too, with `ok: false` and `Not run: …`. |
+| `recent` | the last 8 calls: `{reply, call, ok, result}`, where `call` is one line (`run_command npm test`) and `result` the first and last lines of the output (300 characters). Calls of a reply that never ran are listed too, with `ok: false` and `Not run: …`: those left when the task stopped (a limit, or the user stopping it mid-reply) and those held back behind a malformed block. |
 | `answer` | the last reply, the final answer once `done` (4 000 characters) |
 | `resumedFrom` | the `task-state.json` this run was resumed from |
 
