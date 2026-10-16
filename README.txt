@@ -19,10 +19,18 @@ responsible for how you use this tool.
 the automated browser. If a site asks for verification, Agent-Transformer stops
 and hands control back to you.
 
+**Clipboard mode is the compliant path.** With `--adapter clipboard` (see Clipboard
+mode), no website is automated: Agent-Transformer opens no browser and never writes
+to or reads from a chat page. It prepares each prompt and reads back the reply you
+copied. You do every interaction with the chat yourself: paste, send, copy. This is
+the split aider uses for its copy/paste mode. What you paste is still sent to the
+provider, under its terms and privacy policy.
+
 ## Agent mode
 
     npm run agent                                   # tasks typed at the prompt
     npm run agent -- --task "Fix the failing test"  # one task, then exit
+    npm run agent -- --adapter clipboard            # any chat, by copy and paste
 
 The agent works in `--workspace` (default: the current folder). The model asks for
 tools by writing fenced blocks tagged `tool`: a JSON line with the name and the
@@ -57,6 +65,66 @@ offline.
 
 Everything the agent reads, files and command output included, is sent to the chat
 provider: do not use it on code or data you cannot share.
+
+## Clipboard mode
+
+    npm run agent -- --adapter clipboard
+    npm run agent -- --adapter clipboard --task "Fix the failing test"
+
+Agent mode without browser automation. The agent prepares each message; you carry
+it to a chat and bring the reply back. It works with any chat you can open
+(DeepSeek, ChatGPT, Gemini, Claude...), in your usual browser and account.
+
+1. Open the chat in your browser.
+2. Type a task at `task>`. The agent prints the prompt and copies it to the
+   clipboard. It sits between `[[agent-transformer prompt N begin]]` and
+   `[[agent-transformer prompt N end]]`, and the first prompt of a conversation
+   carries the instructions and the list of tools.
+3. Paste it into the chat and send it. The agent says when the prompt goes into a
+   new conversation: the first one, and after `/new`.
+4. When the reply is complete, copy all of it (the copy button under the reply is
+   the easiest way) and press Enter at `reply N>`. The agent reads the clipboard,
+   runs the tool calls and prints the next prompt.
+5. Repeat until the model replies without tool calls: that is the final answer.
+
+Each prompt asks the model to end its reply with the line `[[end of reply N]]`.
+Before a reply reaches the agent it is checked, and you are asked again when:
+
+- the clipboard still holds the prompt (Enter pressed before copying the reply), or
+  the text has the prompt markers (your own message copied by mistake);
+- the end line is missing or a code block is left open: the reply was cut off, still
+  being written, or copied only in part;
+- the end line has another number: it is the reply to an older prompt.
+
+Copy the reply again and press Enter. If the model only forgot its end line,
+`/accept` passes the refused reply on as it is. At `reply N>`:
+
+    Enter     read the reply from the clipboard
+    /copy     copy the prompt to the clipboard again
+    /accept   pass on the last refused reply, as it is
+    Ctrl+C    stop the task
+
+**Without a clipboard**, or when the clipboard tool fails, copy the prompt from the
+terminal, from its begin line to its end line, and paste the reply into the terminal
+instead of pressing Enter. A pasted reply ends at its `[[end of reply N]]` line; if
+it has none, type `[[end]]` on a line of its own after it. What is pasted after the
+end line is dropped, so it cannot answer an approval prompt.
+
+**Clipboard tools.** Windows: PowerShell (`Get-Clipboard`, `Set-Clipboard`; the text
+crosses the pipes as UTF-8). macOS: `pbcopy` and `pbpaste`. Linux: `wl-copy` and
+`wl-paste` on Wayland, else `xclip` or `xsel`; under WSL without them, the Windows
+clipboard through `powershell.exe`. Nothing else is installed or needed.
+
+**Files.** Nothing is uploaded. When a message needs files, the agent lists their
+full paths: attach them yourself with the chat's attach button.
+
+**The rest is unchanged.** Tools, approvals, the sandbox and checkpoints work as in
+the other modes: every command asks at the terminal, and without a terminal it is
+denied. Since you take part in every turn, `--max-minutes` defaults to 120 here.
+`--replay` and the plain chat (`npm run chat`) do not take `--adapter clipboard`.
+
+The prompts carry what the agent read. Clipboard history and cloud clipboard sync
+(Windows `Win+V`, clipboard managers) keep a copy of them too.
 
 ## Safety
 
