@@ -43,7 +43,7 @@ export interface AgentCliOptions {
 
 const COMMANDS = `Commands:
   /new          start a new chat (the model forgets the previous tasks)
-  /resume [dir] continue the last saved task, or the one in that session folder, in a new chat
+  /resume [dir] continue the last task saved in this workspace, or the one in that session folder, in a new chat
   /tools        list the tools the model can call
   /undo         put the workspace back as it was before the last change (asks first)
   /checkpoints  list the snapshots taken before each change
@@ -213,9 +213,9 @@ export async function runAgentCli(options: AgentCliOptions): Promise<void> {
       if (input === '/resume' || input.startsWith('/resume ')) {
         try {
           const folder = input.slice('/resume'.length).trim().replace(/^"(.*)"$/, '$1');
-          const file = folder === '' ? await findLatestTaskState(join(options.dataDir, 'sessions')) : resolve(folder);
+          const file = folder === '' ? await findLatestTaskState(join(options.dataDir, 'sessions'), options.workspace) : resolve(folder);
           if (file === undefined) {
-            console.log(dim('No saved task to resume.'));
+            console.log(dim('No saved task of this workspace to resume.'));
             continue;
           }
           const saved = await loadTaskState(file);

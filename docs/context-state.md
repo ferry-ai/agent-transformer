@@ -80,11 +80,12 @@ the toolbox already has a tool with that name, or with `taskTool: false`.
 From the agent prompt:
 
     /resume              the most recently updated task-state.json under <data-dir>/sessions
+                         whose task ran in this workspace (the data dir is shared)
     /resume <folder>     the one in that session folder (or a task-state.json path)
 
 From a script:
 
-    const { state, file } = await loadTaskState(folderOrFile);   // or findLatestTaskState(sessionsDir)
+    const { state, file } = await loadTaskState(folderOrFile);   // or findLatestTaskState(sessionsDir, workspace)
     const result = await agent.resume(state, signal, file);
 
 A resume always runs in a **new chat** (a fresh agent is already on one; an agent that

@@ -141,3 +141,22 @@ test('the latest saved task is the most recently updated one', async () => {
   assert.equal(await findLatestTaskState(sessions), newer);
   await rm(sessions, { recursive: true, force: true });
 });
+
+test('with a workspace, the latest saved task is the latest one that ran there', async () => {
+  const sessions = await mkdtemp(join(tmpdir(), 'agent-sessions-'));
+  const other = resolve(tmpdir(), 'agent-state-other-root');
+  const here = await saveTaskState(join(sessions, 'a-here'), newTaskState('here', root, 0));
+  const elsewhere = await saveTaskState(join(sessions, 'b-elsewhere'), newTaskState('elsewhere', other, 0));
+  const broken = join(sessions, 'c-broken', TASK_STATE_FILE);
+  await mkdir(join(sessions, 'c-broken'));
+  await writeFile(broken, '{ not json');
+  await utimes(here, new Date(2026, 0, 1), new Date(2026, 0, 1));
+  await utimes(elsewhere, new Date(2026, 5, 1), new Date(2026, 5, 1));
+  await utimes(broken, new Date(2026, 6, 1), new Date(2026, 6, 1));
+  assert.equal(await findLatestTaskState(sessions), broken); // no workspace: the newest file, as before
+  assert.equal(await findLatestTaskState(sessions, root), here);
+  assert.equal(await findLatestTaskState(sessions, other), elsewhere);
+  if (process.platform === 'win32') assert.equal(await findLatestTaskState(sessions, root.toUpperCase()), here);
+  assert.equal(await findLatestTaskState(sessions, resolve(tmpdir(), 'agent-state-third-root')), undefined);
+  await rm(sessions, { recursive: true, force: true });
+});

@@ -267,21 +267,48 @@ export async function loadTaskState(path: string): Promise<{ state: TaskState; f
   return { state: checkState(data, file), file };
 }
 
-/** The most recently updated task-state.json under <data-dir>/sessions, if any. */
-export async function findLatestTaskState(sessionsDir: string): Promise<string | undefined> {
+const FOLD_CASE = process.platform === 'win32' || process.platform === 'darwin';
+
+/** Whether two workspace paths are the same folder: resolved, and folded where the file system ignores case. */
+export function sameWorkspace(a: string, b: string): boolean {
+  const fold = (path: string): string => (FOLD_CASE ? resolve(path).toLowerCase() : resolve(path));
+  return fold(a) === fold(b);
+}
+
+/**
+ * The most recently updated task-state.json under <data-dir>/sessions, if any. With a
+ * workspace, only a task that ran in it counts: the data dir is shared by every workspace.
+ */
+export async function findLatestTaskState(sessionsDir: string, workspace?: string): Promise<string | undefined> {
   let names: string[];
   try {
     names = await readdir(sessionsDir);
   } catch {
     return undefined;
   }
-  let best: { file: string; at: number } | undefined;
+  const found: { file: string; at: number }[] = [];
   for (const name of names) {
     const file = join(sessionsDir, name, TASK_STATE_FILE);
     const info = await stat(file).catch(() => undefined);
-    if (info?.isFile() && (best === undefined || info.mtimeMs > best.at)) best = { file, at: info.mtimeMs };
+    if (info?.isFile()) found.push({ file, at: info.mtimeMs });
   }
-  return best?.file;
+  found.sort((a, b) => b.at - a.at);
+  for (const { file } of found) {
+    if (workspace === undefined) return file;
+    const root = await savedRoot(file);
+    if (root !== '' && sameWorkspace(root, workspace)) return file;
+  }
+  return undefined;
+}
+
+/** The workspace a saved state names, or '' when the file cannot be read. */
+async function savedRoot(file: string): Promise<string> {
+  try {
+    const data: unknown = JSON.parse(await readFile(file, 'utf8'));
+    return isRecord(data) && typeof data.root === 'string' ? data.root : '';
+  } catch {
+    return '';
+  }
 }
 
 const STATUSES: readonly TaskState['status'][] = ['running', 'done', 'max_iterations', 'timeout', 'filtered', 'aborted', 'failed'];

@@ -37,6 +37,7 @@ import {
   notePending,
   recordRollover,
   resumedState,
+  sameWorkspace,
   saveTaskState,
   STATE_LIMITS,
   TASK_TOOL,
@@ -214,8 +215,7 @@ export class Agent {
    * state. The limits start over for this run. Refused when the task ran in another workspace.
    */
   async resume(saved: TaskState, signal?: AbortSignal, from?: string): Promise<AgentResult> {
-    const fold = (path: string): string => (FOLD_CASE ? resolve(path).toLowerCase() : resolve(path));
-    if (fold(saved.root) !== fold(this.options.root)) {
+    if (!sameWorkspace(saved.root, this.options.root)) {
       throw new Error(`That task ran in ${saved.root}, not in ${resolve(this.options.root)}: resume it with --workspace ${saved.root}.`);
     }
     return this.execute(resumedState(saved, this.now(), from), { kind: 'resume', stopped: saved.status }, signal);
