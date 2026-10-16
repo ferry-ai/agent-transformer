@@ -1,11 +1,12 @@
 import { existsSync } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { Agent, type AgentEvent, type AgentResult } from './agent/loop.js';
 import { createApprover } from './approval-prompt.js';
 import { McpReview } from './mcp-review.js';
 import { proseOf, type ToolCall } from './agent/protocol.js';
+import { findLatestTaskState, loadTaskState, type TaskState } from './agent/state.js';
 import { AdapterError, type ChatAdapter } from './core/adapter.js';
 import { Transcript } from './core/transcript.js';
 import { Checkpoints, type UndoPlan } from './tools/checkpoints.js';
@@ -42,6 +43,7 @@ export interface AgentCliOptions {
 
 const COMMANDS = `Commands:
   /new          start a new chat (the model forgets the previous tasks)
+  /resume [dir] continue the last saved task, or the one in that session folder, in a new chat
   /tools        list the tools the model can call
   /undo         put the workspace back as it was before the last change (asks first)
   /checkpoints  list the snapshots taken before each change
@@ -151,11 +153,12 @@ export async function runAgentCli(options: AgentCliOptions): Promise<void> {
     console.log((runner.warnings.length > 0 ? red : dim)(`Commands: ${runner.where}`));
     console.log(dim(`Session log: ${transcript.dir}`));
 
-    const runTask = async (task: string): Promise<AgentResult> => {
+    const runTask = async (task: string | { state: TaskState; file: string }): Promise<AgentResult> => {
       running = new AbortController();
       const started = Date.now();
       try {
-        const result = await agent.run(task, running.signal);
+        const result =
+          typeof task === 'string' ? await agent.run(task, running.signal) : await agent.resume(task.state, running.signal, task.file);
         progress.stop();
         if (result.error instanceof AdapterError && result.error.kind === 'closed') throw result.error;
         printResult(result, Date.now() - started, options);
@@ -204,6 +207,25 @@ export async function runAgentCli(options: AgentCliOptions): Promise<void> {
             const next = i === 0 ? dim('  ← /undo goes back to here') : '';
             console.log(`  ${checkpoint.at.toLocaleString()}  ${safeLine(checkpoint.label)}${next}`);
           }
+        }
+        continue;
+      }
+      if (input === '/resume' || input.startsWith('/resume ')) {
+        try {
+          const folder = input.slice('/resume'.length).trim().replace(/^"(.*)"$/, '$1');
+          const file = folder === '' ? await findLatestTaskState(join(options.dataDir, 'sessions')) : resolve(folder);
+          if (file === undefined) {
+            console.log(dim('No saved task to resume.'));
+            continue;
+          }
+          const saved = await loadTaskState(file);
+          const goal = saved.state.goal.split('\n')[0] ?? '';
+          console.log(dim(`Resuming (${saved.state.status}, ${saved.state.iterations} replies so far): ${safeLine(goal)}`));
+          await runTask(saved);
+        } catch (error) {
+          if (error instanceof AdapterError && error.kind === 'closed') throw error;
+          // The message may quote the state file (its workspace path): sanitized like any outside text.
+          console.log(red(`✖ ${safeLine(errorMessage(error))}`));
         }
         continue;
       }
@@ -323,6 +345,15 @@ function printer(label: string, showThinking: boolean, isTool: (name: string) =>
       case 'retry':
         stop();
         console.log(dim(`${event.error.message} Trying again in ${Math.round(event.delayMs / 1000)}s (${event.attempt}).`));
+        break;
+      case 'drift':
+        console.log(red(`  ✖ ${safeLine(event.detail)}: the reply does not follow the tool protocol (${event.count} in a row).`));
+        break;
+      case 'rollover':
+        console.log(yellow(`↻ New chat (${event.reason}, ${event.used} characters in the last one): the task goes on from its saved state.`));
+        break;
+      case 'attachments_off':
+        console.log(yellow(`⚠ Attaching files failed (${safeLine(event.message)}): long results go as summaries from now on.`));
         break;
     }
   };
