@@ -551,6 +551,39 @@ test('edit_file needs the file read (or written) in the same conversation', asyn
   await rm(base, { recursive: true, force: true });
 });
 
+test('the gate keys files as the path policy does: reading " app.py" does not unlock app.py', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'agent-gate-'));
+  const root = join(base, 'workspace');
+  await mkdir(root);
+  await writeFile(join(root, 'app.py'), 'a\n');
+  await writeFile(join(root, ' app.py'), 'a\n');
+  const steps = [
+    call('read_file', { path: ' app.py' }),
+    call('edit_file', { path: 'app.py' }, '<<<<<<< SEARCH\na\n=======\nb\n>>>>>>> REPLACE'),
+    'Done.',
+  ];
+  if (process.platform !== 'win32') {
+    await writeFile(join(root, 'a\\b.py'), 'a\n');
+    await mkdir(join(root, 'a'));
+    await writeFile(join(root, 'a', 'b.py'), 'a\n');
+    steps.splice(2, 0, call('read_file', { path: 'a\\b.py' }), call('edit_file', { path: 'a/b.py' }, '<<<<<<< SEARCH\na\n=======\nb\n>>>>>>> REPLACE'));
+  }
+  const adapter = new FakeAdapter(steps);
+  await adapter.open();
+  const events: AgentEvent[] = [];
+  const agent = new Agent({ adapter, toolbox: new Toolbox(nativeTools({ root })), root, onEvent: (event) => events.push(event) });
+  assert.equal((await agent.run('Edit')).status, 'done');
+  assert.equal(await readFile(join(root, 'app.py'), 'utf8'), 'a\n');
+  assert.match(adapter.sent[2]?.message ?? '', /Not run: app\.py was not read in this conversation/);
+  const gated = events.filter((event) => event.type === 'gated').length;
+  if (process.platform === 'win32') assert.equal(gated, 1);
+  else {
+    assert.equal(gated, 2);
+    assert.equal(await readFile(join(root, 'a', 'b.py'), 'utf8'), 'a\n');
+  }
+  await rm(base, { recursive: true, force: true });
+});
+
 test('update_task is offered with its rule; context: false offers neither', async () => {
   const { adapter, agent } = await setup([call('update_task', {}, '- [ ] one'), 'ok']);
   await agent.run('task');

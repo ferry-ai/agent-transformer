@@ -259,8 +259,10 @@ reaches the toolbox:
     current text. Call read_file on it first, then send the edit again.
 
 The list starts empty in every new chat (a rollover, a resume, `/new`), since the
-model has lost the text it read. Paths are compared after normalisation (`./a.py`,
-`a.py`, absolute paths in the workspace), ignoring case on Windows and macOS. The
+model has lost the text it read. Paths are resolved against the workspace as the path
+policy resolves them (`./a.py`, `a.py` and absolute paths in the workspace are the
+same file; nothing is trimmed, so `" a.py"` is another file; a backslash separates
+folders on Windows only), and compared ignoring case on Windows and macOS. The
 refusal emits `gated`, logs a `tool_call` with `gated: true`, and is not counted as
 a tool call. It is a guard against stale edits, not a security boundary: it only ever
 refuses more. It applies to the native `edit_file` only; `write_file` and MCP tools

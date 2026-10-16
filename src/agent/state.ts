@@ -1,5 +1,5 @@
 import { mkdir, readdir, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises';
-import { isAbsolute, join, posix, relative, resolve } from 'node:path';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { ToolCall } from './protocol.js';
 import type { AgentStatus } from './loop.js';
 import { ToolError, type Tool, type ToolOutput } from '../tools/types.js';
@@ -160,16 +160,19 @@ export function shortResult(text: string): string {
 
 /**
  * A path the model gave, as the state lists it: relative to the workspace, "/"
- * separators, no "./". Only for bookkeeping: the path policy checks the real access.
+ * separators, no "./". It is resolved the way the path policy resolves it (nothing
+ * trimmed; a backslash separates folders on Windows only), so the read-before-edit
+ * gate never takes one file for another. Only for bookkeeping: the policy checks the
+ * real access. A path outside the workspace stays absolute.
  */
 export function workspacePath(input: string, root: string): string {
-  let path = input.trim().replace(/\\/g, '/');
-  if (isAbsolute(path) || /^[A-Za-z]:\//.test(path)) {
-    const inside = relative(resolve(root), resolve(path)).replace(/\\/g, '/');
-    if (!inside.startsWith('..') && !isAbsolute(inside)) path = inside;
-  }
-  path = posix.normalize(path === '' ? '.' : path).replace(/^(\.\/)+/, '').replace(/\/+$/, '');
-  return path === '' ? '.' : path;
+  const base = resolve(root);
+  const target = resolve(base, input);
+  const inside = relative(base, target);
+  const outside = inside === '..' || inside.startsWith(`..${sep}`) || isAbsolute(inside);
+  const path = outside ? target : inside;
+  const shown = sep === '\\' ? path.replace(/\\/g, '/') : path;
+  return shown === '' ? '.' : shown;
 }
 
 /** Parses "- [x] step" lines. Plain lines and "- step" count as steps not done yet. */

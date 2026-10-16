@@ -35,10 +35,14 @@ test('checklists: "- [x]" steps are done, plain lines and "- [ ]" are not', () =
 
 test('paths are listed relative to the workspace, with "/" and no "./"', () => {
   assert.equal(workspacePath('./src/app.py', root), 'src/app.py');
-  assert.equal(workspacePath('src\\app.py', root), 'src/app.py');
   assert.equal(workspacePath('src//lib/../app.py', root), 'src/app.py');
   assert.equal(workspacePath(join(root, 'src', 'app.py'), root), 'src/app.py');
   assert.equal(workspacePath('', root), '.');
+  // As the path policy resolves them: nothing trimmed, a backslash is a separator on Windows only.
+  assert.equal(workspacePath(' app.py', root), ' app.py');
+  assert.equal(workspacePath('src\\app.py', root), process.platform === 'win32' ? 'src/app.py' : 'src\\app.py');
+  assert.equal(workspacePath('../other/app.py', root), resolve(root, '../other/app.py').replace(/\\/g, '/'));
+  assert.equal(workspacePath('..app.py', root), '..app.py');
 });
 
 test('calls fill the lists of files and the recent results; update_task is not a result', () => {
