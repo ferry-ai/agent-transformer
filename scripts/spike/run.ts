@@ -18,7 +18,7 @@ import { tmpdir, userInfo } from 'node:os';
 import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { DeepSeekWebAdapter } from '../../src/adapters/deepseek/index.js';
-import { fragmentStream, replyHtml, startMockSite, type MockSite } from '../../src/adapters/deepseek/testing/mock-site.js';
+import { startMockSite, type MockSite } from '../../src/adapters/deepseek/testing/mock-site.js';
 import { FakeAdapter } from '../../src/adapters/fake/index.js';
 import type { BrowserChoice } from '../../src/browser/launch.js';
 import { defaultDataDir } from '../../src/config.js';
@@ -26,6 +26,7 @@ import type { ChatAdapter } from '../../src/core/adapter.js';
 import type { SandboxChoice } from '../../src/tools/sandbox.js';
 import { injectFaults, parseFaults } from './faults.js';
 import { runSpike } from './harness.js';
+import { answer, mockTurns } from './mock-faults.js';
 import { idealScript } from './project.js';
 import { readSpikeLog, renderReport } from './report.js';
 
@@ -35,7 +36,8 @@ const USAGE = `Usage: npx tsx scripts/spike/run.ts [options]
                         mock: the DeepSeek adapter on a local copy of the page, headless
                         deepseek: chat.deepseek.com with the logged-in profile (live)
   --cycles <n>          cycles to reach (default 20); the task under way finishes
-  --faults <list>       fake only: failures to inject, e.g. malformed@3,busy@5 (scripts/spike/faults.ts)
+  --faults <list>       fake and mock: failures to inject, e.g. malformed@3,busy@5 (scripts/spike/faults.ts)
+  --signed-out          mock only: the page is the sign-in page, as for a profile that is not logged in
   --budget <chars>      context budget of one chat (default: the agent's, 200000)
   --max-iterations <n>  replies per task (default 8)
   --max-minutes <n>     time limit per task (default 30)
@@ -68,13 +70,15 @@ async function main(): Promise<void> {
       pause: { type: 'string', default: '0' },
       'workspace-base': { type: 'string' },
       'keep-going': { type: 'boolean', default: false },
+      'signed-out': { type: 'boolean', default: false },
       help: { type: 'boolean', short: 'h', default: false },
     },
   });
   if (values.help) return console.log(USAGE);
   const kind = values.adapter;
   if (kind !== 'fake' && kind !== 'mock' && kind !== 'deepseek') throw new Error('--adapter must be fake, mock or deepseek.');
-  if (values.faults !== undefined && kind !== 'fake') throw new Error('--faults works with --adapter fake only.');
+  if (values.faults !== undefined && kind === 'deepseek') throw new Error('--faults works with --adapter fake or mock only.');
+  if (values['signed-out'] && kind !== 'mock') throw new Error('--signed-out works with --adapter mock only.');
   const cycles = whole(values.cycles, '--cycles');
   const timeoutMs = whole(values.timeout, '--timeout') * 1000;
   const sandbox = (['auto', 'none', 'docker', 'podman'] as const).find((choice) => choice === values.sandbox);
@@ -104,11 +108,10 @@ async function main(): Promise<void> {
     fastRetries = true;
   } else {
     if (kind === 'mock') {
-      const replies = [...script];
-      site = await startMockSite(() => {
-        const text = replies.shift() ?? 'The mock has no scripted reply left.';
-        return { body: fragmentStream({ text }), html: replyHtml({ text }) };
-      });
+      const turns = mockTurns(script, parseFaults(values.faults ?? ''));
+      site = await startMockSite(() => turns.shift() ?? answer('The mock has no scripted reply left.'));
+      if (values['signed-out']) site.signedOut = true;
+      fastRetries = true;
     }
     const profileDir =
       kind === 'mock' ? join(run, 'mock-profile') : join(resolve(values['data-dir'] ?? defaultDataDir()), 'profiles', 'deepseek');

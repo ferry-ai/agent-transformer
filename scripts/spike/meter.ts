@@ -146,7 +146,7 @@ export interface CycleRecord {
   /** The last budget event: how full the chat was after this reply. */
   budget?: { chat: number; used: number; limit: number };
   summarized: number;
-  /** Files attached to the message that got the reply. */
+  /** Files uploaded with the cycle's messages: every send but those whose upload itself failed. */
   attachments: number;
   attachmentsOff: boolean;
   /** This cycle's message opened a new chat. */
@@ -293,7 +293,7 @@ export class SpikeMeter {
       record.replyChars = reply.text.length;
       if (reply.thinking) record.thinkingChars = reply.thinking.length;
       record.source = reply.source;
-      record.attachments = attempt.attachments;
+      record.attachments += attempt.attachments;
       if (reply.filtered === true) record.filtered = true;
       if (reply.text.trim() === '') record.emptyReplies += 1;
     } else {
@@ -302,6 +302,8 @@ export class SpikeMeter {
       attempt.message = error instanceof Error ? error.message : String(error);
       record.errors[attempt.error] = (record.errors[attempt.error] ?? 0) + 1;
       if (attempt.error === 'timeout') record.timeouts += 1;
+      // The files went up unless the upload is what failed (as the agent judges it: send_failed, or not an AdapterError).
+      if (attempt.error !== 'send_failed' && attempt.error !== 'unexpected') record.attachments += attempt.attachments;
     }
     record.attempts.push(attempt);
     if ('reply' in outcome && this.open) this.open.lastBlank = outcome.reply.text.trim() === '';

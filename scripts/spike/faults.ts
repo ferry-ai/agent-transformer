@@ -12,7 +12,8 @@ export const FAULT_KINDS = [
   'cutoff', // the reply stops inside its last tool block
   'timeout', // AdapterError timeout
   'filter', // the content filter's canned answer
-  'busy', // AdapterError busy (retried by the agent)
+  'busy', // AdapterError busy (retried by the agent); on the mock page, HTTP 429
+  'notice', // a toast saying the server is busy, as the page shows it; the adapter turns it into busy
   'limit', // AdapterError limit (the chat is full: a rollover)
   'provider', // AdapterError provider
   'send_failed', // AdapterError send_failed
@@ -79,6 +80,8 @@ export function faultStep(kind: FaultKind, reply: string): FakeStep {
       return 'Let me look at the file.\n<tool_call>{"name": "read_file", "arguments": {"path": "README.md"}}</tool_call>';
     case 'unknown':
       return '```tool\n{"tool": "search_files", "args": {"pattern": "subtract"}}\n```';
+    case 'notice':
+      return new AdapterError('busy', 'DeepSeek: The server is busy. Please try again later.');
     default:
       return new AdapterError(kind as AdapterErrorKind, `Injected ${kind}.`);
   }
