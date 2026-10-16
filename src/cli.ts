@@ -2,6 +2,7 @@ import { statSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { parseArgs } from 'node:util';
+import { ClipboardAdapter, readlineInput, systemClipboard } from './adapters/clipboard/index.js';
 import { DeepSeekWebAdapter, type InspectReport } from './adapters/deepseek/index.js';
 import { FakeAdapter } from './adapters/fake/index.js';
 import { runAgentCli } from './agent-cli.js';
@@ -28,10 +29,13 @@ Options:
 Agent mode (the model works on your files with tools):
   --agent              each line you type is a task for the agent
   --task <text>        run one task in agent mode, then exit
+  --adapter <name>     deepseek (default): drive chat.deepseek.com in a browser;
+                       clipboard: automate no website, you paste each prompt into any chat
+                       and copy the reply back (see README, "Clipboard mode")
   --workspace <dir>    the folder the agent works in (default: the current folder)
   --mcp <file>         MCP servers to connect (default: <data-dir>/mcp.json, if present)
   --max-iterations <n> replies the model gets per task (default: 30)
-  --max-minutes <n>    time limit per task (default: 30)
+  --max-minutes <n>    time limit per task (default: 30; 120 with --adapter clipboard)
   --confirm-writes     ask before writing files too (shell commands always ask)
   --pass-env <NAME>    give commands this environment variable too (repeat for more);
                        otherwise they only get PATH, HOME, USER, SHELL, TERM and the locale
@@ -51,6 +55,8 @@ const COMMANDS = `Commands:
 const NOTICE =
   "Web mode drives chat.deepseek.com in a real browser. DeepSeek's Terms of Use forbid automated use: use it at your own risk (see README).";
 const AGENT_NOTICE = 'Everything the agent reads, files and command output included, is sent to DeepSeek.';
+const CLIPBOARD_NOTICE =
+  'Everything the agent reads, files and command output included, goes into the prompts you paste into the chat.';
 
 type Ask = (prompt: string) => Promise<string | null>;
 
@@ -66,10 +72,12 @@ async function main(): Promise<void> {
       help: { type: 'boolean', short: 'h', default: false },
       agent: { type: 'boolean', default: false },
       task: { type: 'string' },
+      adapter: { type: 'string', default: 'deepseek' },
       workspace: { type: 'string' },
       mcp: { type: 'string' },
       'max-iterations': { type: 'string', default: '30' },
-      'max-minutes': { type: 'string', default: '30' },
+      // The default depends on the adapter: a person takes part in every turn of clipboard mode.
+      'max-minutes': { type: 'string' },
       'confirm-writes': { type: 'boolean', default: false },
       replay: { type: 'string' },
       'pass-env': { type: 'string', multiple: true, default: [] },
@@ -99,17 +107,23 @@ async function main(): Promise<void> {
       notify: (message) => console.log(dim(message)),
     });
 
+  const adapterChoice = parseAdapter(values.adapter);
   if (values.agent || values.task !== undefined) {
     const replay = values.replay === undefined ? undefined : resolve(values.replay);
-    if (replay === undefined) console.log(dim(`${NOTICE}\n${AGENT_NOTICE}`));
+    if (replay !== undefined && adapterChoice === 'clipboard') throw new Error('--replay and --adapter clipboard do not go together.');
+    const clipboard = adapterChoice === 'clipboard' ? new ClipboardAdapter({ clipboard: systemClipboard() }) : undefined;
+    if (clipboard) console.log(dim(CLIPBOARD_NOTICE));
+    else if (replay === undefined) console.log(dim(`${NOTICE}\n${AGENT_NOTICE}`));
     await runAgentCli({
-      adapter: replay === undefined ? deepseek() : await FakeAdapter.fromFile(replay),
-      label: replay === undefined ? 'DeepSeek' : 'The replay',
+      adapter: clipboard ?? (replay === undefined ? deepseek() : await FakeAdapter.fromFile(replay)),
+      label: clipboard ? 'The chat' : replay === undefined ? 'DeepSeek' : 'The replay',
+      // The clipboard adapter reads Enter and pasted replies through the agent's own readline.
+      attachInput: clipboard ? (rl) => clipboard.setInput(readlineInput(rl)) : undefined,
       dataDir,
       workspace: resolve(values.workspace ?? '.'),
       mcpConfig: values.mcp === undefined ? undefined : resolve(values.mcp),
       maxIterations: Math.floor(positive(values['max-iterations'], '--max-iterations')),
-      maxMinutes: positive(values['max-minutes'], '--max-minutes'),
+      maxMinutes: positive(values['max-minutes'] ?? (clipboard ? '120' : '30'), '--max-minutes'),
       confirmWrites: values['confirm-writes'] === true,
       passEnv: parsePassEnv(values['pass-env'] ?? []),
       sandbox: parseSandbox(values.sandbox),
@@ -121,6 +135,7 @@ async function main(): Promise<void> {
     return;
   }
   if (values.replay !== undefined) throw new Error('--replay works with --agent or --task.');
+  if (adapterChoice === 'clipboard') throw new Error('--adapter clipboard works with --agent or --task.');
 
   const adapter = deepseek();
   console.log(dim(NOTICE));
@@ -273,6 +288,11 @@ function parsePassEnv(names: string[]): string[] {
   return names;
 }
 
+function parseAdapter(value: string | undefined): 'deepseek' | 'clipboard' {
+  if (value === 'deepseek' || value === 'clipboard') return value;
+  throw new Error('--adapter must be one of: deepseek, clipboard.');
+}
+
 function parseBrowser(value: string | undefined): BrowserChoice {
   const choices: readonly BrowserChoice[] = ['auto', 'chrome', 'msedge', 'chromium'];
   const match = choices.find((choice) => choice === value);
@@ -290,7 +310,8 @@ function isFile(path: string): boolean {
 
 main().catch((error: unknown) => {
   if (error instanceof AdapterError && error.kind === 'closed') {
-    console.log(dim('The browser was closed.'));
+    // "The browser was closed." from DeepSeek; in clipboard mode, the input was closed.
+    console.log(dim(error.message));
     return;
   }
   console.error(red(errorMessage(error)));
