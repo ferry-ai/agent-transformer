@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import { createInterface } from 'node:readline/promises';
+import { createInterface, type Interface } from 'node:readline/promises';
 import { Agent, type AgentEvent, type AgentResult } from './agent/loop.js';
 import { createApprover } from './approval-prompt.js';
 import { McpReview } from './mcp-review.js';
@@ -38,6 +38,11 @@ export interface AgentCliOptions {
   showThinking: boolean;
   /** Run this one task and exit. Without it, tasks are read from the prompt. */
   task?: string;
+  /**
+   * For an adapter that reads the terminal while it waits for a reply (--adapter clipboard):
+   * gets this readline, so both share stdin. No "is answering" ticker is drawn then.
+   */
+  attachInput?: (rl: Interface) => void;
 }
 
 const COMMANDS = `Commands:
@@ -65,6 +70,7 @@ export async function runAgentCli(options: AgentCliOptions): Promise<void> {
     runner?.closeSync();
   });
   const rl = createInterface({ input: process.stdin, output: process.stdout });
+  options.attachInput?.(rl);
   const closed = new Promise<null>((done) => rl.once('close', () => done(null)));
   const ask: Ask = (prompt) => Promise.race([rl.question(prompt).catch(() => null), closed]);
   let running: AbortController | undefined;
@@ -137,7 +143,7 @@ export async function runAgentCli(options: AgentCliOptions): Promise<void> {
 
     await adapter.open();
     const transcript = await Transcript.create(options.dataDir, adapter.name);
-    const progress = printer(options.label, options.showThinking, (name) => toolbox.has(name));
+    const progress = printer(options.attachInput ? undefined : options.label, options.showThinking, (name) => toolbox.has(name));
     const agent = new Agent({
       adapter,
       toolbox,
@@ -292,7 +298,7 @@ async function readBlock(ask: Ask): Promise<string | null> {
 }
 
 /** Prints the agent's progress: what the model says, each call and a line of its result. */
-function printer(label: string, showThinking: boolean, isTool: (name: string) => boolean) {
+function printer(label: string | undefined, showThinking: boolean, isTool: (name: string) => boolean) {
   let stopTicker = (): void => undefined;
   const stop = (): void => {
     stopTicker();
@@ -302,7 +308,7 @@ function printer(label: string, showThinking: boolean, isTool: (name: string) =>
     switch (event.type) {
       case 'waiting':
         stop();
-        stopTicker = ticker(`${label} is answering (reply ${event.iteration})`);
+        if (label !== undefined) stopTicker = ticker(`${label} is answering (reply ${event.iteration})`);
         break;
       case 'reply': {
         stop();
