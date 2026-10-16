@@ -152,10 +152,12 @@ test('commands get a clean environment: no tokens unless passed with --pass-env'
     assert.equal(plain.AGENT_TEST_TOKEN, undefined);
     assert.equal(plain.LC_TIME, 'C');
     assert.ok(plain.PATH);
-    const allowed = Object.keys(plain).filter((name) => !/^(LANG|LANGUAGE|LC_\w+|TZ)$/.test(name));
-    for (const name of allowed) {
-      assert.ok(['HOME', 'LOGNAME', 'PATH', 'SHELL', 'TERM', 'USER', 'PWD', 'SHLVL', '_', 'OLDPWD'].includes(name) || process.platform === 'win32', name);
-    }
+    const allowed = ['HOME', 'LOGNAME', 'PATH', 'SHELL', 'TERM', 'USER', 'PWD', 'SHLVL', '_', 'OLDPWD'];
+    // macOS sets __CF_USER_TEXT_ENCODING (the user's text encoding) in every process that loads
+    // CoreFoundation, node included: the command gets it without inheriting it, and it is no secret.
+    if (process.platform === 'darwin') allowed.push('__CF_USER_TEXT_ENCODING');
+    const others = Object.keys(plain).filter((name) => !/^(LANG|LANGUAGE|LC_\w+|TZ)$/.test(name) && !allowed.includes(name));
+    if (process.platform !== 'win32') assert.deepEqual(others, []);
 
     const passing = new Toolbox(nativeTools({ root, passEnv: ['AGENT_TEST_TOKEN'] }), { approve: async () => ({ approved: true }) });
     const passed = await passing.call({ index: 1, tool: 'run_command', args: { command: printEnv } });
