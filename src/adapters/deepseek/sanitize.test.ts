@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { basename, join, sep } from 'node:path';
 import { test } from 'node:test';
 import { FIXTURES_DIR, fixtureFiles, mockFixtures, sameFolder, streamExpectation, strayFixtureFiles } from './testing/fixtures.js';
-import { checkText, IdMap, sanitizeHtml, sanitizeStream } from './testing/sanitize.js';
+import { checkText, IdMap, sanitizeHtml, sanitizeStream, scrubText } from './testing/sanitize.js';
 
 // The sanitizer stands between a logged-in session and a public repository: these
 // tests use made-up ids and tokens shaped like real ones.
@@ -80,6 +80,40 @@ test('checkText finds what must never be committed', () => {
   // The excerpt never prints a whole secret back.
   const [finding] = checkText('x', `prefix ${TOKEN} suffix`);
   assert.ok(finding && !finding.excerpt.includes(TOKEN));
+});
+
+test('lowercase user folders, cookie pairs, phone numbers and every id key are caught and scrubbed', () => {
+  const rules = (text: string): string[] => checkText('x', text).map((finding) => finding.rule);
+  const leaks: Array<[string, string]> = [
+    [String.raw`c:\users\someone\notes.txt`, 'user folder'],
+    ['file:///c:/users/someone/x', 'user folder'],
+    ['ds_session_id=AbCdEf1234567890; HWWAFSESID=abc123def456', 'cookie'],
+    ['GET /?auth_token=abcdef123456 HTTP/1.1', 'cookie'],
+    ['token=abcdef123456', 'cookie'],
+    ['sent with Cookie: a=b', 'header'],
+    ['{"mobile_number": "3331234567"}', 'personal field'],
+    ['{"mobile_number": 3331234567}', 'personal field'],
+    ['{"chat_session_id": 4455}', 'numeric id'],
+    ['{"request_id": 4455}', 'numeric id'],
+    ['{"message_id": "4455"}', 'string id'],
+    ['{"file_ids": [1001, 4455]}', 'id list'],
+    ['{"ref_file_ids": ["file-abc"]}', 'id list'],
+  ];
+  for (const [text, rule] of leaks) assert.ok(rules(text).includes(rule), `${text}: expected "${rule}", got ${JSON.stringify(rules(text))}`);
+
+  const ids = new IdMap();
+  const free = scrubText('c:\\users\\someone\\notes.txt, file:///c:/users/someone/x, ds_session_id=AbCdEf1234567890; HWWAFSESID=abc123def456, Cookie: a=b', ids);
+  assert.doesNotMatch(free, /someone|AbCdEf|abc123|a=b/);
+  assert.deepEqual(checkText('free.txt', free), []);
+  const stream = sanitizeStream(
+    'data: {"mobile_number":3331234567,"phone":"3331234567","chat_session_id":4455,"request_id":"r-1","file_ids":[77,"f-9"]}\n\n',
+    ids,
+  );
+  assert.doesNotMatch(stream, /3331234567|4455|r-1|77|f-9/);
+  assert.deepEqual(checkText('stream.sse', stream), []);
+  // Placeholders and ordinary text stay as they are.
+  assert.deepEqual(rules('{"file_ids": [1001, "id-2"]}'), []);
+  assert.deepEqual(rules('the session lasted a while; token=short'), []);
 });
 
 test('committed fixtures carry nothing private and no stray files', () => {

@@ -91,8 +91,10 @@ neutral and written for this purpose (`capture.ts --list`); send nothing else.
        npx tsx scripts/deepseek/sanitize.ts "<session folder>" --deny "<your name>,<your email>"
 
    Message, chat, session, user and file ids become placeholders (`1001`, `id-1`,
-   `00000000-…-000000000001`), times become zero, tokens, emails and user folders are
-   masked. If anything still looks private it writes nothing and lists it. The summary
+   `00000000-…-000000000001`), times become zero; tokens, emails, phone numbers, user
+   folders (in any letter case, `file:///` URLs too), cookie pairs whose name says
+   session, token, sid or auth, and `Cookie`/`Authorization` header values are masked. If
+   anything still looks private it writes nothing and lists it. The summary
    says, per reply, whether the page text matches the stream text.
 5. **Check and review.** `npx tsx scripts/deepseek/check-fixtures.ts --deny "<…>"`, then
    read the `.json` files: `stream` is what the parser read, `page` what the page script
