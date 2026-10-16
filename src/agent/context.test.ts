@@ -370,6 +370,29 @@ test('drift that goes on after the new chat still stops the task', async () => {
   assert.equal(adapter.remaining, 1);
 });
 
+test('replies cut off inside a tool block: asked again with a hint to split, no new chat, an accurate failure', async () => {
+  // Spike: two cut-off replies in a row rolled the chat over as drift ("did not follow the tool protocol"),
+  // and the gate then refused the edit in the new chat; three failed the task as "malformed tool calls".
+  const cut = `\`\`\`tool\n${JSON.stringify({ tool: 'note', args: {} })}\nthe first half of a long no`;
+  const { adapter, agent, of, log } = await setup([cut, cut, call('note', {}, 'the first half'), 'Done.']);
+  const result = await agent.run('Write a long note');
+  assert.equal(result.status, 'done');
+  assert.deepEqual(log, ['the first half\n']);
+  assert.equal(adapter.newChats, 0);
+  assert.deepEqual(of('rollover'), []);
+  assert.deepEqual(of('drift'), []);
+  assert.deepEqual(of('malformed').map((event) => event.error.cutOff), [true, true]);
+  const second = adapter.sent[1]?.message ?? '';
+  assert.match(second, /\[1\] note: error\n```text\nThe tool block is not closed: the reply was cut off inside it, so nothing in it ran\./);
+  assert.match(second, /send it in parts: a long file as write_file with the first part, then edit_file to add the rest/);
+
+  const { agent: stuck, adapter: stuckAdapter } = await setup([cut, cut, cut, 'never'], { maxMalformedReplies: 3 });
+  const failed = await stuck.run('Write a long note');
+  assert.equal(failed.status, 'failed');
+  assert.match(String(failed.error), /no valid tool call 3 times in a row; the last one was cut off inside a tool block/);
+  assert.equal(stuckAdapter.newChats, 0);
+});
+
 test('a tool call written outside a tool block is not taken for the final answer', async () => {
   const { adapter, agent, of, log } = await setup([
     'Reading it now.\n{"tool": "note", "args": {"text": "hi"}}',

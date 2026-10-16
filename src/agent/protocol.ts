@@ -27,6 +27,8 @@ export interface CallError {
   index: number;
   tool?: string;
   message: string;
+  /** The block never closed: the reply ended inside it, most likely cut off by the provider. */
+  cutOff?: boolean;
 }
 
 export type ParsedBlock = { kind: 'call'; call: ToolCall } | { kind: 'error'; error: CallError };
@@ -73,7 +75,7 @@ function scan(text: string, options: ParseOptions): { block: ParsedBlock; fence:
       continue;
     }
     if (!fence.closed) {
-      push({ kind: 'error', error: { index, tool: toolName(parsed), message: NOT_CLOSED } }, fence);
+      push({ kind: 'error', error: { index, tool: toolName(parsed), message: NOT_CLOSED, cutOff: true } }, fence);
     } else if ('error' in parsed) {
       push({ kind: 'error', error: { index, tool: parsed.tool, message: parsed.error } }, fence);
     } else {
@@ -136,8 +138,11 @@ export function fenceFor(text: string): string {
   return '`'.repeat(Math.max(3, longest + 1));
 }
 
+/** Sending the same long text again would be cut at the same place: the model is told to split it. */
 const NOT_CLOSED =
-  'The tool block is not closed: the reply may have been cut off. Send the call again, complete, in a new reply.';
+  'The tool block is not closed: the reply was cut off inside it, so nothing in it ran. Send the call again in a new reply. ' +
+  'If its text is long, send it in parts: a long file as write_file with the first part, then edit_file to add the rest; ' +
+  'long edits as several smaller edit_file calls.';
 
 interface Fence {
   info: string;

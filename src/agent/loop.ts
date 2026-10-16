@@ -401,17 +401,25 @@ export class Agent {
 
       // Drift: with the context features on, unknown tools count as invalid calls too.
       const invalid = settings ? valid === 0 : calls === 0;
+      // A reply cut off inside a tool block followed the protocol: the provider stopped it. It counts
+      // toward the limit of replies in a row with no valid call, but it is not drift: no drift event,
+      // and no new chat, which would not make the next reply shorter, would blame the protocol in its
+      // envelope, and would have the read-before-edit gate refuse the edits the model was writing.
+      const cutOff = blocks.some((block) => block.kind === 'error' && block.error.cutOff === true);
       drift = invalid ? drift + 1 : 0;
-      if (invalid && settings) await this.drifted(drift, 'no valid tool call');
+      if (invalid && settings && !cutOff) await this.drifted(drift, 'no valid tool call');
       if (drift >= maxMalformed) {
-        return finish('failed', new Error(`The model wrote only malformed tool calls ${drift} times in a row.`));
+        const why = cutOff
+          ? `The model's replies had no valid tool call ${drift} times in a row; the last one was cut off inside a tool block.`
+          : `The model wrote only malformed tool calls ${drift} times in a row.`;
+        return finish('failed', new Error(why));
       }
       const malformed = blocks.some((block) => block.kind === 'error');
       message = {
         results: settings ? await this.prepare(results) : results,
         tail: resultsFooter(result.iterations, this.maxIterations, malformed),
       };
-      if (settings && invalid && drift % settings.rolloverAfterDrift === 0) {
+      if (settings && invalid && !cutOff && drift % settings.rolloverAfterDrift === 0) {
         try {
           message = await rollover('drift', message);
         } catch (error) {

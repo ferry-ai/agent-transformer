@@ -250,6 +250,14 @@ is told what was found and how a call is written. Each drifting reply emits `dri
 after `maxMalformedReplies` (3) in a row, counted across the rollover, the task fails
 as before.
 
+A reply **cut off inside a tool block** (the block never closes: the provider stopped
+the reply) is not drift: the model followed the protocol. Its block is reported as
+malformed, with a hint to send long text in parts, but it emits no `drift` and never
+starts a new chat: that would not make the next reply shorter, its envelope would blame
+the protocol, and the read-before-edit gate would refuse the edits the model was
+writing. It still counts toward `maxMalformedReplies`; when the last of those replies
+was cut off, the error says so.
+
 ## Read before edit
 
 `edit_file` on a file that was not read with `read_file` (or written with
