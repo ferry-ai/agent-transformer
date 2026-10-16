@@ -4,9 +4,9 @@ import type { AddressInfo } from 'node:net';
 /**
  * A local stand-in for chat.deepseek.com, for tests and dry runs: no network, no
  * account. It has what the adapter touches (the message box, a file input, the
- * DeepThink toggle, messages with .ds-markdown, the completion request) and replays
- * whatever stream the test gives it. It says nothing about the real site: only
- * captures do (docs/calibration.md).
+ * DeepThink toggle, messages with .ds-markdown, each a [data-message-id] inside a
+ * .ds-message, the completion request) and replays whatever stream the test gives it.
+ * It says nothing about the real site: only captures do (docs/calibration.md).
  */
 
 export interface MockRequest {
@@ -266,12 +266,20 @@ const CHAT_PAGE = `<!doctype html><html lang="it"><head><meta charset="utf-8"><t
     input.value = '';
     send(prompt);
   });
+  // Both message selectors match, one inside the other (.ds-message around
+  // [data-message-id]): the adapter must count each message once.
+  function message(className) {
+    const outer = document.createElement('div');
+    outer.className = 'ds-message';
+    const inner = document.createElement('div');
+    inner.dataset.messageId = String(++ids);
+    inner.className = className;
+    outer.append(inner);
+    chat.append(outer);
+    return inner;
+  }
   async function send(prompt) {
-    const user = document.createElement('div');
-    user.dataset.messageId = String(++ids);
-    user.className = 'user';
-    user.textContent = prompt;
-    chat.append(user);
+    message('user').textContent = prompt;
     const sent = files;
     files = [];
     const response = await fetch('/api/v0/chat/completion', {
@@ -291,10 +299,7 @@ const CHAT_PAGE = `<!doctype html><html lang="it"><head><meta charset="utf-8"><t
       setTimeout(() => toast.remove(), 4000);
     }
     if (html === '') return;
-    const reply = document.createElement('div');
-    reply.dataset.messageId = String(++ids);
-    reply.innerHTML = html;
-    chat.append(reply);
+    message('reply').innerHTML = html;
   }
 </script>
 </body></html>`;

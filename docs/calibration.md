@@ -33,7 +33,9 @@ Adapter (`index.ts`):
   adapter no longer waits forever on the sign-in page or a verification: it fails at once
   with "log in with `npm run chat`". With a terminal it says so right away instead of
   after 10 s, then waits for the user. The `waitForUser` option overrides the default.
-  `inspect()` (`npm run check`) never waits for a login.
+  `inspect()` (`npm run check`) never waits for a login. Both behaviours are pinned by adapter tests on the
+  signed-out mock page (fail at once without a user; keep waiting, then a `closed` error
+  when the browser closes, with one).
 - **Notices.** Toasts and alerts (`[role="alert"]`, `.ds-toast`) whose text matches the
   busy, limit or logged-out patterns end the wait with the matching error, both while
   sending and while waiting for the page.
@@ -50,7 +52,8 @@ Adapter (`index.ts`):
   streamed before it (`filtered: true`). Page: the last `.ds-markdown` block is the
   answer, earlier ones the reasoning; a short reply matching the filter texts is flagged.
 - **Messages** are counted the way the page script counts them: the two message guesses
-  (`[data-message-id]`, `.ds-message`) folded when nested.
+  (`[data-message-id]`, `.ds-message`) folded when nested. The mock page nests every `[data-message-id]` in a
+  `.ds-message`, so the page-fallback tests fail if the count goes back to a raw match count.
 - **DeepThink**: `setDeepThink(on)` clicks the toggle whose text is "DeepThink" and reads
   its state from ARIA or its class names.
 - **Debug captures** keep the message HTML once it has been still for a second.

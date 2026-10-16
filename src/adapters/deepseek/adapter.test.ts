@@ -186,6 +186,49 @@ test('without a user to log in, open() fails at once on the sign-in page and say
   }
 });
 
+test('with a user to log in, open() keeps waiting on the sign-in page until the browser closes', async (t) => {
+  if (!adapter) return t.skip('no browser available');
+  const loggedOut = await startMockSite(() => ({ body: '', html: '' }));
+  loggedOut.signedOut = true;
+  const notices: string[] = [];
+  const other = new DeepSeekWebAdapter({
+    ...options(loggedOut.url, 'attended-profile'),
+    waitForUser: true,
+    notify: (message) => notices.push(message),
+  });
+  try {
+    let settled = false;
+    const opening = other.open().then(
+      () => {
+        settled = true;
+        return undefined;
+      },
+      (failure: unknown) => {
+        settled = true;
+        return failure;
+      },
+    );
+    const deadline = Date.now() + 15_000;
+    while (!notices.some((notice) => /sign-in page/.test(notice)) && !settled && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    // Past the notice, it goes on waiting for the login rather than failing.
+    await new Promise((resolve) => setTimeout(resolve, 4_000));
+    assert.equal(settled, false, 'open() should still be waiting for the login');
+    assert.ok(
+      notices.some((notice) => /sign-in page: log in in the browser window/.test(notice)),
+      `expected the sign-in notice, got ${JSON.stringify(notices)}`,
+    );
+    await other.close();
+    const error = await opening;
+    assert.ok(error instanceof AdapterError, `expected an AdapterError, got ${String(error)}`);
+    assert.equal(error.kind, 'closed');
+  } finally {
+    await other.close();
+    await loggedOut.close();
+  }
+});
+
 test('a session that expires between messages fails fast too', async (t) => {
   if (!adapter || !site) return t.skip('no browser available');
   site.signedOut = true;
