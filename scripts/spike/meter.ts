@@ -325,11 +325,10 @@ export class SpikeMeter {
         this.open?.gated.add(event.call);
         break;
       case 'result':
-        if (this.open?.gated.has(event.call)) break;
+        // Refused by the gate, or a tool that does not exist: nothing ran.
+        if (this.open?.gated.has(event.call) || !this.options.known(event.call.tool)) break;
         record.tools[event.call.tool] = (record.tools[event.call.tool] ?? 0) + 1;
-        if (!event.output.ok && !/^The user did not allow this call\./.test(event.output.text) && this.options.known(event.call.tool)) {
-          record.toolFailures += 1;
-        }
+        if (!event.output.ok && !/^The user did not allow this call\./.test(event.output.text)) record.toolFailures += 1;
         break;
       case 'retry':
         record.retries += 1;
