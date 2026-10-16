@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import {
   fenceFor,
   formatResults,
+  looksLikeUnfencedCall,
   parseLenientJson,
   parseToolCalls,
   proseOf,
@@ -203,4 +204,19 @@ test('prose: the reply without its tool blocks, other code kept', () => {
   ].join('\n');
   assert.equal(proseOf(reply, { isTool: (name) => known.has(name) }), 'Reading two files.\n\n```ts\nconst kept = true;\n```\n\nThen I fix them.');
   assert.equal(proseOf('Cut off:\n```tool\n{"tool": "x"'), 'Cut off:');
+});
+
+test('off protocol: a call outside a tool block is noticed, prose and other code are not', () => {
+  const found = (text: string): string | undefined => looksLikeUnfencedCall(text, (name) => known.has(name));
+  assert.equal(found('I will read it now.\n{"tool": "read_file", "args": {"path": "a.py"}}'), 'a JSON line that calls read_file');
+  assert.equal(found('{"name": "run_command", "arguments": {"command": "ls"}}'), 'a JSON line that calls run_command');
+  // A json block whose JSON broke: the parser skips it, but it is still a call attempt.
+  assert.equal(found('```json\n{"tool": "read_file", "args": {"path": "a"}\n```'), 'a JSON line that calls read_file');
+  assert.match(found('<tool_call>\n{"name": "x"}\n</tool_call>') ?? '', /function-calling tag \(<tool_call/);
+  assert.match(found('<｜tool▁calls▁begin｜>read_file') ?? '', /function-calling tag/);
+
+  assert.equal(found('Done: I changed how read_file handles app.py.'), undefined);
+  assert.equal(found('{"tool": "unknown_tool"}'), undefined);
+  assert.equal(found('Here is the config:\n```python\n{"tool": "read_file"}\n```'), undefined);
+  assert.equal(found('The answer is {"tool": "read_file"} in the middle of a sentence.'), undefined);
 });
