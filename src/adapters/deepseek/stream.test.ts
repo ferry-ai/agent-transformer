@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { parseCompletionStream } from './stream.js';
+import { endedEarly, parseCompletionStream } from './stream.js';
 
 const data = (payload: unknown): string => `data: ${JSON.stringify(payload)}`;
 const named = (event: string, payload: unknown): string => `event: ${event}\n${data(payload)}`;
@@ -93,3 +93,67 @@ test('CRLF, comments and non-JSON data are tolerated', () => {
   const body = [': keep-alive', 'data: not json', data({ p: 'response/content', o: 'APPEND', v: 'ok' })].join('\r\n\r\n');
   assert.equal(parseCompletionStream(body).content, 'ok');
 });
+
+test('a canned answer replaces what was streamed before it', () => {
+  const reply = parseCompletionStream(
+    stream(
+      data({ v: { response: { fragments: [{ id: 1, type: 'RESPONSE', content: 'Part of an answer' }], status: 'WIP' } } }),
+      data({ p: 'response/fragments', o: 'APPEND', v: [{ id: 2, type: 'TEMPLATE_RESPONSE', content: 'Canned.' }] }),
+      data({ p: 'response/status', v: 'CONTENT_FILTER' }),
+    ),
+  );
+  assert.equal(reply.content, 'Canned.');
+  assert.equal(reply.filtered, true);
+  assert.equal(endedEarly(reply), false);
+});
+
+test('a stream that stops before FINISHED ended early; quasi_status counts', () => {
+  const cut = parseCompletionStream(
+    stream(data({ v: { response: { fragments: [{ type: 'RESPONSE', content: 'Half' }], status: 'WIP' } } }), data({ v: ' an answer' })),
+  );
+  assert.equal(cut.content, 'Half an answer');
+  assert.equal(cut.status, 'WIP');
+  assert.equal(endedEarly(cut), true);
+
+  const incomplete = parseCompletionStream(stream(data({ p: 'response/content', v: 'x' }), data({ p: 'response/status', v: 'INCOMPLETE' })));
+  assert.equal(endedEarly(incomplete), true);
+
+  const quasi = parseCompletionStream(
+    stream(
+      data({ v: { response: { content: 'Done', status: 'WIP' } } }),
+      data({ p: 'response', o: 'BATCH', v: [{ p: 'quasi_status', v: 'FINISHED' }] }),
+    ),
+  );
+  assert.equal(quasi.status, 'FINISHED');
+  assert.equal(endedEarly(quasi), false);
+
+  // No status at all: nothing says it ended early.
+  assert.equal(endedEarly(parseCompletionStream(stream(data({ p: 'response/content', v: 'ok' })))), false);
+});
+
+test('a refused request answers with a JSON envelope instead of a stream', () => {
+  assert.deepEqual(parseCompletionStream('{"code":40003,"msg":"Authorization Failed (invalid token)","data":null}').errors, [
+    'Authorization Failed (invalid token)',
+  ]);
+  assert.deepEqual(
+    parseCompletionStream('{"code":0,"msg":"","data":{"biz_code":3,"biz_msg":"Too many requests","biz_data":null}}').errors,
+    ['Too many requests'],
+  );
+  // A successful envelope carries no error.
+  assert.deepEqual(parseCompletionStream('{"code":0,"msg":"","data":{"biz_code":0,"biz_msg":""}}').errors, []);
+});
+
+test('error hints are reported, other hints and named events are not', () => {
+  const reply = parseCompletionStream(
+    stream(
+      named('ready', { request_message_id: 1, response_message_id: 2 }),
+      named('hint', { type: 'info', content: 'Tip: try DeepThink.' }),
+      named('hint', { type: 'error', content: 'Rate limit reached', finish_reason: 'rate_limit_reached' }),
+      named('title', { content: 'A title' }),
+      named('close', { click_behavior: 'none' }),
+    ),
+  );
+  assert.deepEqual(reply.errors, ['Rate limit reached (rate_limit_reached)']);
+  assert.equal(reply.content, '');
+});
+
