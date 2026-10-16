@@ -7,11 +7,17 @@ export interface TurnRecord {
   attachments: string[];
   reply?: ChatReply;
   error?: unknown;
+  /** The agent's conversation number: it grows at each new chat. */
+  chat?: number;
+  /** How many characters that conversation holds after this turn, for the budget. */
+  contextChars?: number;
 }
 
 /**
  * One folder per session: transcript.jsonl, plus the raw stream and HTML of each
  * reply when the adapter runs in debug mode. These logs feed the replay tests later.
+ * In agent mode the folder also holds task-state.json and, under attachments/, the
+ * full text of long tool results sent as files (see docs/context-state.md).
  * They hold everything the model read, so the folder is 0700 and its files 0600.
  */
 export class Transcript {
@@ -51,6 +57,8 @@ export class Transcript {
         durationMs: reply.durationMs,
       },
       error: error === undefined ? undefined : describe(error),
+      chat: record.chat,
+      contextChars: record.contextChars,
     });
   }
 
