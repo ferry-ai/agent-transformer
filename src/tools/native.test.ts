@@ -115,10 +115,12 @@ test('run_command asks first, then reports output and exit code', async () => {
   assert.match(result.text, /^\[exit code 3\]/);
   assert.match(result.text, /out/);
   assert.match(result.text, /err/);
-  assert.deepEqual(await call('run_command', { command: 'node -e "process.stdout.write(process.cwd())"' }), {
-    ok: true,
-    text: `[exit code 0]\n${await realpath(root)}`,
-  });
+  const cwd = await call('run_command', { command: 'node -e "process.stdout.write(process.cwd())"' });
+  assert.equal(cwd.ok, true);
+  assert.match(cwd.text, /^\[exit code 0\]\n/);
+  // Compared by real path: the child prints the folder the way it was started in it, by its 8.3 short
+  // name on the Windows runner (C:\Users\RUNNER~1\...), while getcwd() gives the real path on POSIX.
+  assert.equal(await realpath(cwd.text.replace(/^\[exit code 0\]\n/, '')), await realpath(root));
 });
 
 test('a denied command does not run and the note reaches the model', async () => {
