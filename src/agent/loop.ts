@@ -6,7 +6,10 @@ import type { ToolOutput } from '../tools/types.js';
 import {
   AttachmentFolder,
   contextSettings,
+  fitResult,
+  fitResults,
   render,
+  resultCost,
   summarize,
   type ContextOptions,
   type ContextSettings,
@@ -93,7 +96,7 @@ export type AgentEvent =
   /** After each exchange: how full the conversation is. */
   | { type: 'budget'; chat: number; used: number; limit: number }
   /** A long result was cut down in the message; its full text went as an attachment, or was left out. */
-  | { type: 'summarized'; index: number; tool: string; chars: number; kept: number; attachment?: string }
+  | { type: 'summarized'; index: number; tool: string; chars: number; kept: number; attachment?: string; full?: boolean }
   /** A new chat took over the task; chat is the agent's conversation number. */
   | { type: 'rollover'; reason: RolloverReason; chat: number; used: number; limit: number }
   /** A reply with no valid tool call: count replies in a row. */
@@ -252,7 +255,7 @@ export class Agent {
       await this.newConversation(reason, state);
       // Nothing done yet: the new chat simply starts the task.
       if (start.kind === 'new' && result.iterations === 0) return { tail: firstMessage(prompt, start.task) };
-      return this.envelope(prompt, state, reason, result.iterations, last, { previousChars: used });
+      return await this.envelope(prompt, state, reason, result.iterations, last, { previousChars: used });
     };
 
     let message: Outgoing;
@@ -265,7 +268,7 @@ export class Agent {
       } catch (error) {
         return finish(stopped(), error);
       }
-      message = this.envelope(prompt, state, 'resume', 0, undefined, { stopped: start.stopped });
+      message = await this.envelope(prompt, state, 'resume', 0, undefined, { stopped: start.stopped });
     } else {
       await transcript?.event('task', { task: start.task });
       message = { tail: this.primed ? followUpMessage(prompt, start.task) : firstMessage(prompt, start.task) };
@@ -485,18 +488,38 @@ export class Agent {
   }
 
   /** The first message of a chat that continues the task: instructions, task, state, then the last results. */
-  private envelope(
+  private async envelope(
     prompt: PromptContext,
     state: TaskState,
     reason: EnvelopeReason,
     iterations: number,
     last?: Outgoing,
     about: { previousChars?: number; stopped?: TaskState['status'] } = {},
-  ): Outgoing {
-    const head = envelopeMessage(prompt, state, { reason, repliesLeft: this.maxIterations - iterations, ...about });
-    if (last === undefined) return { head: `${head}\n\n# Last results`, tail: NO_LAST_RESULTS };
-    const envelope: Outgoing = { head: `${head}\n\n# Last results`, tail: last.tail };
-    if (last.results !== undefined) envelope.results = last.results;
+  ): Promise<Outgoing> {
+    const settings = this.context;
+    // The goal is capped here too: a long one would leave the new chat no room.
+    const goalChars = settings ? Math.max(1_000, Math.floor(settings.budgetChars / 10)) : undefined;
+    const message = envelopeMessage(prompt, state, {
+      reason,
+      repliesLeft: this.maxIterations - iterations,
+      ...about,
+      ...(goalChars === undefined ? {} : { goalChars }),
+    });
+    const head = `${message}\n\n# Last results`;
+    if (last === undefined) return { head, tail: NO_LAST_RESULTS };
+    const envelope: Outgoing = { head, tail: last.tail };
+    if (last.results === undefined) return envelope;
+    if (!settings) {
+      envelope.results = last.results;
+      return envelope;
+    }
+    // The whole envelope fits in half of what the budget leaves for messages, so the new
+    // chat has room for the replies that follow and does not roll over again at once.
+    const room = Math.floor((settings.budgetChars - settings.replyReserveChars) / 2) - head.length - last.tail.length - 100;
+    envelope.results = fitResults(last.results, room);
+    for (const [i, result] of envelope.results.entries()) {
+      if (result !== last.results[i]) await this.summarized(result);
+    }
     return envelope;
   }
 
@@ -509,28 +532,42 @@ export class Agent {
     const settings = this.context;
     if (!settings) return results;
     const prepared: PreparedResult[] = [];
-    let room = Math.floor(settings.budgetChars / 4);
+    // All the results of one message, attachments included, fit in a third of the budget,
+    // so a chat always holds more than one reply and an envelope can carry them.
+    let left = Math.floor((settings.budgetChars - settings.replyReserveChars) / 3);
+    let attachRoom = Math.floor(settings.budgetChars / 4);
     for (const result of results) {
       const limit = result.tool === 'read_file' ? settings.inlineReadChars : settings.inlineResultChars;
-      if (result.text.length <= limit) {
-        prepared.push(result);
-        continue;
-      }
-      const summary: PreparedResult['summary'] = summarize(result.text, limit);
-      if (this.attach && this.attachments && result.text.length <= room) {
-        room -= result.text.length;
-        try {
-          summary.attachment = await this.attachments.save(result.tool, result.text);
-        } catch (error) {
-          await this.options.transcript?.event('attachment_failed', { message: error instanceof Error ? error.message : String(error) });
+      let item: PreparedResult = result;
+      if (result.text.length > limit) {
+        const summary: NonNullable<PreparedResult['summary']> = summarize(result.text, limit);
+        item = { ...result, summary };
+        const fits = resultCost(item) + result.text.length <= left;
+        if (this.attach && this.attachments && result.text.length <= attachRoom && fits) {
+          attachRoom -= result.text.length;
+          try {
+            summary.attachment = await this.attachments.save(result.tool, result.text);
+          } catch (error) {
+            await this.options.transcript?.event('attachment_failed', { message: error instanceof Error ? error.message : String(error) });
+          }
         }
       }
-      prepared.push({ ...result, summary });
-      const event = { index: result.index, tool: result.tool, chars: result.text.length, kept: summary.text.length };
-      this.emit({ type: 'summarized', ...event, ...(summary.attachment === undefined ? {} : { attachment: summary.attachment }) });
-      await this.options.transcript?.event('result_summarized', { ...event, attachment: summary.attachment });
+      item = fitResult(item, left);
+      left = Math.max(0, left - resultCost(item));
+      prepared.push(item);
+      if (item.summary !== undefined) await this.summarized(item);
     }
     return prepared;
+  }
+
+  /** Reports a result cut down in its message: why, how much, and where its full text went. */
+  private async summarized(result: PreparedResult): Promise<void> {
+    const { summary } = result;
+    if (summary === undefined) return;
+    const event = { index: result.index, tool: result.tool, chars: result.text.length, kept: summary.text.length };
+    const extra = { ...(summary.attachment === undefined ? {} : { attachment: summary.attachment }), ...(summary.full ? { full: true } : {}) };
+    this.emit({ type: 'summarized', ...event, ...extra });
+    await this.options.transcript?.event('result_summarized', { ...event, ...extra });
   }
 
   /** The read-before-edit gate: edit_file needs the file's text in this conversation. */

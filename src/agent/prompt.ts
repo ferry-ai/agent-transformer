@@ -1,6 +1,6 @@
 import type { JsonSchema, Tool } from '../tools/types.js';
 import { fenceFor } from './protocol.js';
-import { TASK_TOOL, type RolloverReason, type TaskState } from './state.js';
+import { cap, TASK_TOOL, type RolloverReason, type TaskState } from './state.js';
 
 /**
  * What the chat is told. A web chat has no system prompt, so the instructions travel
@@ -70,9 +70,20 @@ export const NO_LAST_RESULTS = 'None in this chat yet: the recent calls in the t
 export function envelopeMessage(
   context: PromptContext,
   state: TaskState,
-  options: { reason: EnvelopeReason; repliesLeft: number; previousChars?: number; stopped?: TaskState['status'] },
+  options: {
+    reason: EnvelopeReason;
+    repliesLeft: number;
+    previousChars?: number;
+    stopped?: TaskState['status'];
+    /** Characters of the goal to show: a longer one is cut, with a note. */
+    goalChars?: number;
+  },
 ): string {
   const stopped = options.stopped ?? state.status;
+  const goal =
+    options.goalChars !== undefined && state.goal.length > options.goalChars
+      ? `${cap(state.goal, options.goalChars)}\n\n[The task was cut to ${options.goalChars} characters to fit this chat.]`
+      : state.goal;
   const files = (list: string[]): string[] => list.slice(-30);
   const busta = {
     replies_used: state.iterations,
@@ -97,7 +108,7 @@ export function envelopeMessage(
       : '';
   return [
     instructions({ ...context, maxIterations: options.repliesLeft }),
-    `# Task\n\n${state.goal}`,
+    `# Task\n\n${goal}`,
     `# Task state\n\n${why[options.reason]} The runner kept this state outside the chat: trust it over what you remember.` +
       `\n\n${fence}json\n${json}\n${fence}${reread}`,
   ].join('\n\n');

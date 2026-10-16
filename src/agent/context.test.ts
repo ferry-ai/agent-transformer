@@ -9,7 +9,7 @@ import { Transcript } from '../core/transcript.js';
 import { nativeTools } from '../tools/native.js';
 import { Toolbox } from '../tools/toolbox.js';
 import type { Tool } from '../tools/types.js';
-import { render, summarize, type ContextOptions } from './context.js';
+import { fitResults, render, resultCost, SQUEEZED_CHARS, summarize, type ContextOptions } from './context.js';
 import { Agent, type AgentEvent, type AgentOptions } from './loop.js';
 import { loadTaskState, TASK_STATE_FILE } from './state.js';
 
@@ -102,6 +102,41 @@ test('a message renders its long results with or without the attachments', () =>
   assert.match(inline.text, /x…x\n\[47 characters were left out to keep this chat short\./);
 });
 
+test('the results of one message fit a room: the first ones keep the most, the others are cut down', () => {
+  const long = (id: string): string => `${id}\n${'x'.repeat(3_000)}\nend of ${id}`;
+  const results = [
+    { index: 1, tool: 'emit', ok: true, text: long('A') },
+    {
+      index: 2,
+      tool: 'emit',
+      ok: true,
+      text: long('B'),
+      summary: { text: 'B…', cut: 3_000, lines: 3, attachment: '/s/attachments/result-0001-emit.txt' },
+    },
+    { index: 3, tool: 'emit', ok: true, text: long('C') },
+    { index: 4, tool: 'emit', ok: false, text: 'short error' },
+  ];
+  const whole = fitResults(results, 100_000);
+  assert.deepEqual(whole, results);
+
+  const fitted = fitResults(results, 3_400);
+  assert.equal(fitted[0], results[0]); // it fits whole
+  assert.deepEqual(fitted[1]?.summary, { text: 'B…', cut: 3_000, lines: 3 }); // no room left for its attachment
+  assert.equal(fitted[2]?.summary?.text, 'C / … / end of C'); // only its first and last lines
+  assert.equal(fitted[2]?.summary?.full, true);
+  assert.match(
+    render({ results: fitted, tail: '' }, true).text,
+    /\[3\] emit: ok\n```text\nC \/ … \/ end of C\n\[\d+ characters were left out because this message was full\./,
+  );
+  assert.ok(fitted.slice(0, 2).reduce((sum, result) => sum + resultCost(result), 0) <= 3_400);
+
+  // With a little more room, the third one keeps a short summary instead.
+  const roomier = fitResults(results, 3_400 + SQUEEZED_CHARS + 300);
+  assert.equal(roomier[2]?.summary?.full, true);
+  assert.match(roomier[2]?.summary?.text ?? '', /^C\n/);
+  assert.ok((roomier[2]?.summary?.text.length ?? 0) <= SQUEEZED_CHARS + 100);
+});
+
 test('a long result goes as a summary, its full text attached from the session folder', async () => {
   const { transcript, done } = await session();
   const { adapter, agent, of } = await setup([call('emit', { size: 12_000, id: 'A' }), 'Done.'], {
@@ -192,7 +227,7 @@ test('one message attaches at most a quarter of the budget; the other long resul
   const { transcript, done } = await session();
   const { adapter, agent, of } = await setup(
     [`${call('emit', { size: 8_000, id: 'A' })}\n${call('emit', { size: 8_000, id: 'B' })}`, 'Done.'],
-    { transcript, context: { budgetChars: 40_000, inlineResultChars: 2_000 } },
+    { transcript, context: { budgetChars: 40_000, replyReserveChars: 0, inlineResultChars: 2_000 } },
   );
   assert.equal((await agent.run('Print two logs')).status, 'done');
   const sent = adapter.sent[1];
@@ -204,45 +239,49 @@ test('one message attaches at most a quarter of the budget; the other long resul
 });
 
 /** Runs a script once to measure the chat, so the budget can be set just below or above it. */
-async function measure(steps: () => FakeStep[], task: string): Promise<number[]> {
+async function measure(steps: () => FakeStep[], task: string, context: ContextOptions = {}): Promise<number[]> {
   const sizes: number[] = [];
-  const { agent } = await setup(steps(), { onEvent: (event) => event.type === 'budget' && sizes.push(event.used) });
+  const { agent } = await setup(steps(), { context, onEvent: (event) => event.type === 'budget' && sizes.push(event.used) });
   await agent.run(task);
   return sizes;
 }
 
 test('the budget moves a long task to a new chat with the envelope: protocol, task state, last results', async () => {
   const steps = (): FakeStep[] => [
-    `${call('update_task', { decision: 'Print in three parts' }, '- [x] Plan\n- [ ] Print the parts')}\n${call('emit', { size: 4_000, id: 'one' })}`,
-    call('emit', { size: 4_000, id: 'two' }),
-    call('emit', { size: 4_000, id: 'three' }),
-    'All three printed.',
+    `${call('update_task', { decision: 'Print in four parts' }, '- [x] Plan\n- [ ] Print the parts')}\n${call('emit', { size: 10_000, id: 'one' })}`,
+    call('emit', { size: 10_000, id: 'two' }),
+    call('emit', { size: 10_000, id: 'three' }),
+    call('emit', { size: 10_000, id: 'four' }),
+    'All four printed.',
   ];
-  // Without a budget the chat would hold this much after each reply.
-  const sizes = await measure(steps, 'Print the report');
-  assert.equal(sizes.length, 4);
-  const budgetChars = (sizes[2] ?? 0) + 1_000; // the third results message does not fit
+  // Results this long stay whole. Without a budget the chat would hold this much after each reply.
+  const inline: ContextOptions = { inlineResultChars: 20_000 };
+  const sizes = await measure(steps, 'Print the report', inline);
+  assert.equal(sizes.length, 5);
+  const budgetChars = (sizes[3] ?? 0) + 1_000; // the fourth results message does not fit
 
   const { transcript, done } = await session();
-  const { adapter, agent, of, log } = await setup(steps(), { transcript, context: { budgetChars, replyReserveChars: 500 } });
+  const { adapter, agent, of, log } = await setup(steps(), { transcript, context: { ...inline, budgetChars, replyReserveChars: 500 } });
   const result = await agent.run('Print the report');
   assert.equal(result.status, 'done');
-  assert.equal(result.iterations, 4);
+  assert.equal(result.iterations, 5);
   assert.deepEqual(log, []);
   assert.equal(adapter.newChats, 1);
   assert.equal(agent.conversation.number, 2);
 
-  const envelope = adapter.sent[3]?.message ?? '';
+  const envelope = adapter.sent[4]?.message ?? '';
   assert.match(envelope, /^You are the mind of a coding agent/);
   assert.match(envelope, /# Calling tools/);
   assert.match(envelope, /# Task\n\nPrint the report\n\n# Task state\n\nThe previous chat grew too long \(\d+ characters\)/);
-  assert.match(envelope, /"replies_used": 3,\n\s+"replies_left": 27/);
+  assert.match(envelope, /"replies_used": 4,\n\s+"replies_left": 26/);
   assert.match(envelope, /"\[x\] Plan",\n\s+"\[ \] Print the parts"/);
-  assert.match(envelope, /"decisions": \[\n\s+"Print in three parts"/);
-  assert.match(envelope, /"call": "emit two",\n\s+"ok": true,\n\s+"result": "emitted two \/ … \//);
-  assert.match(envelope, /# Last results\n\nTool results:\n\n\[1\] emit: ok\n```text\nemitted three\n/);
-  assert.match(envelope, /\n```\n\nReply 3 of 30 used\. Continue/);
+  assert.match(envelope, /"decisions": \[\n\s+"Print in four parts"/);
+  assert.match(envelope, /"call": "emit three",\n\s+"ok": true,\n\s+"result": "emitted three \/ … \//);
+  assert.match(envelope, /# Last results\n\nTool results:\n\n\[1\] emit: ok\n```text\nemitted four\n/);
+  assert.match(envelope, /\n```\n\nReply 4 of 30 used\. Continue/);
   assert.doesNotMatch(envelope, /emitted one\n/);
+  assert.ok(envelope.length + 500 <= budgetChars, `envelope of ${envelope.length} characters`);
+  assert.deepEqual(of('summarized'), []); // every result fitted whole, the last one in the envelope too
 
   assert.deepEqual(of('rollover').map((event) => [event.reason, event.chat, event.limit]), [['budget', 2, budgetChars]]);
   assert.ok(of('budget').every((event) => event.used <= budgetChars));
@@ -251,17 +290,50 @@ test('the budget moves a long task to a new chat with the envelope: protocol, ta
     lines.filter((line) => line.event === 'rollover').map((line) => [line.reason, line.chat]),
     [['budget', 2]],
   );
-  assert.deepEqual(lines.filter((line) => line.turn !== undefined).map((line) => line.chat), [1, 1, 1, 2]);
+  assert.deepEqual(lines.filter((line) => line.turn !== undefined).map((line) => line.chat), [1, 1, 1, 1, 2]);
   const { state } = await loadTaskState(transcript.dir);
   assert.equal(state.status, 'done');
   assert.equal(state.chats, 2);
   assert.deepEqual(state.rollovers.map((rollover) => rollover.reason), ['budget']);
-  assert.equal(state.answer, 'All three printed.');
+  assert.equal(state.answer, 'All four printed.');
   await done();
 });
 
+test('many long results in one reply fit the budget: the envelope fits, and a chat holds more than one reply', async () => {
+  const budgetChars = 30_000;
+  const replyReserveChars = 1_000;
+  const batch = Array.from({ length: 8 }, (_, i) => call('emit', { size: 5_500, id: `r${i}` })).join('\n');
+  const { adapter, agent, of } = await setup([batch, batch, batch, batch, batch, 'Done.'], {
+    context: { budgetChars, replyReserveChars },
+  });
+  // Which message opened each new chat: the envelope.
+  const firsts: number[] = [];
+  const newChat = adapter.newChat.bind(adapter);
+  adapter.newChat = async () => {
+    firsts.push(adapter.sent.length);
+    await newChat();
+  };
+  const goal = `Print the logs.\n${'Context. '.repeat(600)}`; // 5 400 characters
+  const result = await agent.run(goal);
+  assert.equal(result.status, 'done');
+  assert.equal(result.iterations, 6);
+  assert.ok(firsts.length > 0, 'the budget should run out at least once');
+  assert.ok(adapter.newChats <= 2, `${adapter.newChats} new chats for 6 replies`);
+  for (const index of firsts) {
+    const envelope = adapter.sent[index]?.message ?? '';
+    assert.match(envelope, /^You are the mind of a coding agent[\s\S]*# Last results\n\nTool results:/);
+    assert.match(envelope, /# Task\n\nPrint the logs\.\n[\s\S]*…\n\n\[The task was cut to 3000 characters to fit this chat\.\]/);
+    assert.ok(envelope.length + replyReserveChars <= budgetChars, `envelope of ${envelope.length} characters`);
+  }
+  for (const event of of('budget')) assert.ok(event.used <= budgetChars, `chat ${event.chat}: ${event.used} > ${budgetChars}`);
+  // The first results message kept the first result whole and cut the rest down.
+  const second = adapter.sent[1]?.message ?? '';
+  assert.match(second, /\[1\] emit: ok\n```text\nemitted r0\n/);
+  assert.match(second, /\[8\] emit: ok\n```text\nemitted r7[\s\S]*this message was full/);
+});
+
 test('a new task in a full chat starts a new chat with the instructions', async () => {
-  const steps = (): FakeStep[] => [call('emit', { size: 4_000 }), 'First done.', 'Second done.'];
+  const steps = (): FakeStep[] => [call('emit', { size: 1_000 }), 'First done.', 'Second done.'];
   const { agent: probe } = await setup(steps());
   await probe.run('first');
   const budgetChars = probe.conversation.usedChars + 100; // too small for the follow-up message

@@ -162,8 +162,20 @@ not the conversation.
 - The toolbox already cuts every result at 20 000 characters (`maxResultChars`) before
   the agent sees it, so an attachment holds at most that much.
 
-Each summarized result emits `summarized` (`{index, tool, chars, kept, attachment?}`)
-and logs `result_summarized`.
+**One message as a whole.** Each result is capped on its own, and the results of one
+message are capped together too: all of them, attachments included, fit in a third of
+`budgetChars - replyReserveChars` (64 000 characters by default). They are taken in
+order. A result that does not fit in what is left first loses its attachment, then is
+cut to a 500-character summary, then to its first and last lines. That last form is
+always sent, whatever the room, so the model still sees every call it made. Its note
+says `[N characters were left out because this message was full. To see them, send
+this call again on its own, or ask for less at a time.]`. Since one results message
+never takes more than a third of the budget, a conversation always holds more than one
+reply.
+
+Each summarized result emits `summarized` (`{index, tool, chars, kept, attachment?,
+full?}`, where `full` means it was cut because the message was full) and logs
+`result_summarized`.
 
 ## Rollover
 
@@ -185,7 +197,8 @@ The "busta" of the README, in four parts:
 
 1. **The instructions**: the whole protocol and the tool list, as in a first message,
    with "at most N replies" set to the replies left in this run.
-2. **The task**: the goal, as the user wrote it.
+2. **The task**: the goal, as the user wrote it, cut to a tenth of the budget (at
+   least 1 000 characters; 20 000 by default) with a note saying so.
 3. **The task state**, why the chat changed, and the state as JSON:
 
        ```json
@@ -207,6 +220,12 @@ The "busta" of the README, in four parts:
 
 Nothing else of the old chat comes along: no earlier replies, no earlier results. The
 model is told to trust the state over what it remembers.
+
+**Its size.** The whole envelope fits in half of `budgetChars - replyReserveChars`: the
+last results are fitted (as above) in what the first three parts leave of that half.
+With a results message capped at a third, the new chat then has room for the reply to
+the envelope and the next results message, so it does not roll over again at once.
+Each result cut further for the envelope emits `summarized` again.
 
 Each rollover emits `rollover` (`{reason, chat, used, limit}`), logs a `rollover` event
 in the transcript and adds a record to `rollovers` in the state.
@@ -299,9 +318,15 @@ belongs to another change); the obvious ones would be `--context-budget <chars>`
   context it takes, still has to be checked live. If the upload throws, the agent
   falls back to summaries; if it "succeeds" without the model seeing the file, the
   model still has the summary.
-- **An envelope can be larger than the budget** (a huge goal, many tools, a big last
-  results message). It is sent anyway; the next message then rolls over again. That
-  costs a new chat per reply but stays bounded by `--max-iterations`.
+- **The size bounds hold for sane settings only.** The envelope fits its half of the
+  budget when the instructions (mostly the tool list) and the task state take less
+  than that: true by far with the defaults (a few thousand characters for the native
+  tools against 96 000), not with a budget set below a long MCP tool list. And a reply
+  with very many calls still sends one short line per call. In those cases the
+  envelope (or a results message) is sent over the budget, and the next message rolls
+  over again: a new chat per reply, bounded by `--max-iterations`. A reply longer than
+  about a sixth of the budget can also make the chat after an envelope roll over after
+  one reply.
 - **What the state does not know**: files changed by commands or MCP tools, anything
   the model learned that it did not write into `update_task`, and the reasoning of
   earlier replies.

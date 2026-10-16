@@ -1,6 +1,7 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { formatResults, type CallResult } from './protocol.js';
+import { shortResult } from './state.js';
 
 /**
  * How much the agent puts in one web conversation. The chat holds everything sent and
@@ -71,6 +72,8 @@ export interface PreparedResult extends CallResult {
     lines: number;
     /** The full text, saved in the session folder. */
     attachment?: string;
+    /** Cut further because its message had no room left for more of it. */
+    full?: boolean;
   };
 }
 
@@ -107,7 +110,8 @@ export function render(message: Outgoing, attach: boolean): RenderedMessage {
         attachedChars += result.text.length;
         return { ...result, text: `${summary.text}\n${attachedNote(summary.attachment, summary.lines, result.text.length)}` };
       }
-      return { ...result, text: `${summary.text}\n${leftOutNote(summary.cut, result.tool)}` };
+      const note = summary.full === true ? fullNote(summary.cut) : leftOutNote(summary.cut, result.tool);
+      return { ...result, text: `${summary.text}\n${note}` };
     });
     parts.push(formatResults(shown, message.tail));
   } else {
@@ -127,6 +131,53 @@ function leftOutNote(cut: number, tool: string): string {
       ? 'Read the rest with read_file, offset and limit.'
       : 'To see more, ask for less at a time: filter a command output (grep, head, tail), or read a file in slices.';
   return `[${cut} characters were left out to keep this chat short. ${how}]`;
+}
+
+function fullNote(cut: number): string {
+  return (
+    `[${cut} characters were left out because this message was full. ` +
+    'To see them, send this call again on its own, or ask for less at a time.]'
+  );
+}
+
+/** What a result cut down to fit a full message keeps of its text. */
+export const SQUEEZED_CHARS = 500;
+
+/** The characters a result takes in a message: its text as rendered, plus its attachment. */
+export function resultCost(result: PreparedResult): number {
+  const rendered = render({ results: [result], tail: '' }, true);
+  return rendered.text.length + rendered.attachedChars;
+}
+
+/**
+ * Fits one result in the room left in its message: as it is if it fits, else without
+ * its attachment, else cut to SQUEEZED_CHARS, else to its first and last lines. That
+ * last form is kept whatever the room: the model must still see that the call ran.
+ */
+export function fitResult(result: PreparedResult, room: number): PreparedResult {
+  if (resultCost(result) <= room) return result;
+  if (result.summary?.attachment !== undefined) {
+    const { attachment: _attachment, ...summary } = result.summary;
+    const plain: PreparedResult = { ...result, summary };
+    if (resultCost(plain) <= room) return plain;
+  }
+  if (result.text.length > SQUEEZED_CHARS) {
+    const squeezed: PreparedResult = { ...result, summary: { ...summarize(result.text, SQUEEZED_CHARS), full: true } };
+    if (resultCost(squeezed) <= room) return squeezed;
+  }
+  const short = shortResult(result.text);
+  const lines = result.text.replace(/\n$/, '').split('\n').length;
+  return { ...result, summary: { text: short, cut: Math.max(0, result.text.length - short.length), lines, full: true } };
+}
+
+/** Fits the results of one message in room characters, in order: the first ones keep the most. */
+export function fitResults(results: PreparedResult[], room: number): PreparedResult[] {
+  let left = Math.max(0, room);
+  return results.map((result) => {
+    const fitted = fitResult(result, left);
+    left = Math.max(0, left - resultCost(fitted));
+    return fitted;
+  });
 }
 
 const ERROR_LINE = /\b(error|errors|fail|failed|failure|failing|exception|panic|traceback|assert\w*|fatal|warning)\b/i;
