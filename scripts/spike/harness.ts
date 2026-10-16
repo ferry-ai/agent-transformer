@@ -214,5 +214,7 @@ function calls(text: string): string[] {
 export function stopsTheRun(result: AgentResult): boolean {
   if (result.status === 'filtered' || result.status === 'aborted') return true;
   if (result.status !== 'failed') return false;
-  return result.error instanceof AdapterError || !(result.error instanceof Error && /malformed tool calls/.test(result.error.message));
+  // Replies with no valid call too many times in a row (malformed, cut off): the model's trouble, not the provider's.
+  const protocol = result.error instanceof Error && !(result.error instanceof AdapterError) && /times in a row/.test(result.error.message);
+  return !protocol;
 }

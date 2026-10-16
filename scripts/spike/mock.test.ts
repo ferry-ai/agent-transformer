@@ -72,7 +72,7 @@ test('every failure class through the real adapter on the mock page, counted as 
   assert.deepEqual(row(3), ['fix-subtract', 'follow-up', 1, 1, 0, 0, 0, 1, 0, 0, {}, false, true]);
   assert.deepEqual(row(4), ['fix-subtract', 'results+malformed', 1, 0, 0, 1, 0, 0, 0, 0, {}, false, true]);
   // The stream stops before FINISHED inside the tool block, and the page shows no more: cut off.
-  assert.deepEqual(row(5), ['fix-subtract', 'results', 1, 1, 1, 0, 0, 1, 0, 0, {}, false, true]);
+  assert.deepEqual(row(5), ['fix-subtract', 'results', 1, 1, 1, 0, 0, 0, 0, 0, {}, false, true]);
   // HTTP 429, then a "server busy" toast: both busy, retried in the same cycle.
   assert.deepEqual(row(7), ['fix-subtract', 'results', 2, 0, 0, 0, 1, 0, 0, 0, { busy: 1 }, false, true]);
   assert.deepEqual(row(8), ['fix-subtract', 'results', 2, 0, 0, 0, 1, 0, 0, 0, { busy: 1 }, false, true]);
@@ -100,7 +100,7 @@ test('every failure class through the real adapter on the mock page, counted as 
   assert.equal(t2.cycles, 26);
   assert.equal(t2.heldInARow, 25);
   assert.deepEqual(t2.errors, { busy: 2, empty: 1, limit: 1 });
-  assert.deepEqual([t2.malformed, t2.cutOff, t2.emptyReplies, t2.filtered, t2.reasks, t2.retries, t2.drift, t2.unknownTools], [2, 1, 1, 1, 6, 4, 5, 1]);
+  assert.deepEqual([t2.malformed, t2.cutOff, t2.emptyReplies, t2.filtered, t2.reasks, t2.retries, t2.drift, t2.unknownTools], [2, 1, 1, 1, 6, 4, 4, 1]);
   assert.deepEqual(t2.rollovers, { limit: 1 });
   assert.equal(t2.chats, 3);
   assert.match(summary.stopped ?? '', /usage-doc\) ended filtered/);

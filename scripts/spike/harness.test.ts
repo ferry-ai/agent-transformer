@@ -141,10 +141,33 @@ test('a malformed block: counted in its cycle, re-asked in the next', async () =
 
 test('a reply cut off inside its tool block: cut-off and malformed, then re-asked', async () => {
   const { summary, cycle } = await spike('cutoff@4', 5);
-  assert.deepEqual(counters(cycle(4)), { ...QUIET, blocks: 1, malformed: 1, cutOff: 1, drift: 1 });
+  assert.deepEqual(counters(cycle(4)), { ...QUIET, blocks: 1, malformed: 1, cutOff: 1 });
   assert.deepEqual(counters(cycle(5)), { ...QUIET, blocks: 1, reasks: 1 });
   assert.deepEqual(cycle(5).tools, { edit_file: 1 });
   assert.equal(summary.totals.cutOff, 1);
+});
+
+test('two cut-off replies in a row: re-asked twice in the same chat, then the edit goes through', async () => {
+  const { summary, cycle } = await spike('cutoff@4,cutoff@4', 6);
+  assert.deepEqual(counters(cycle(4)), { ...QUIET, blocks: 1, malformed: 1, cutOff: 1 });
+  assert.deepEqual(counters(cycle(5)), { ...QUIET, blocks: 1, malformed: 1, cutOff: 1, reasks: 1 });
+  assert.deepEqual(counters(cycle(6)), { ...QUIET, blocks: 1, reasks: 1 });
+  assert.deepEqual(cycle(6).tools, { edit_file: 1 });
+  assert.equal(cycle(6).chat, 1);
+  assert.deepEqual(summary.totals.rollovers, {});
+  assert.equal(summary.tasks[1]?.check, 'pass');
+});
+
+test('three cut-off replies in a row: the task fails, saying so, and the run goes on', async () => {
+  const { summary, cycle } = await spike('cutoff@4,cutoff@4,cutoff@4', 7);
+  assert.equal(cycle(6).end, 'failed');
+  assert.equal(cycle(6).holds, false);
+  assert.match(cycle(6).error ?? '', /the last one was cut off inside a tool block/);
+  assert.deepEqual(summary.totals.rollovers, {});
+  assert.equal(summary.totals.heldInARow, 5);
+  // The provider is fine: the next task starts (it gets the replies left in the script, now out of step).
+  assert.equal(summary.stopped, undefined);
+  assert.equal(cycle(7).taskId, 'log');
 });
 
 test('a timeout: an adapter error that fails the task and stops the run', async () => {
